@@ -31,7 +31,7 @@ export default function GamePage() {
     setPlayerId(pid);
 
     // Fetch initial state
-    fetch("/api/game", {
+    fetch("/alien/api/game", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get-state", roomCode }),
@@ -147,7 +147,7 @@ export default function GamePage() {
 
   const callAPI = useCallback(
     async (action: string, extraData = {}) => {
-      const res = await fetch("/api/game", {
+      const res = await fetch("/alien/api/game", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
