@@ -8,6 +8,7 @@ import {
   generateDeliberation,
 } from "@/lib/alien-ai";
 import {
+  GamePhase,
   GameState,
   Player,
   GameMessage,
@@ -476,7 +477,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function getNextPhase(state: GameState): string | null {
+function getNextPhase(state: GameState): GamePhase | null {
   const { phase, roundHistory, players } = state;
   const groupRoundsPlayed = roundHistory.filter(
     (r) => r.roundType === "group"
