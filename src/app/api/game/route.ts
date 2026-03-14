@@ -158,59 +158,58 @@ export async function POST(request: NextRequest) {
           gameState: state,
         });
 
-        // Wait a moment, then generate intro
-        setTimeout(async () => {
-          try {
-            // Generate nicknames
-            const nicknames = await generateNicknames(state.players);
+        // Generate intro inline (no setTimeout — Vercel freezes lambdas after response)
+        // Clients already see the arrival animation via the Pusher event above
+        try {
+          // Generate nicknames
+          const nicknames = await generateNicknames(state.players);
 
-            // Apply nicknames
-            for (const player of state.players) {
-              const nicknameData = nicknames[player.id];
-              if (nicknameData && typeof nicknameData === "object") {
-                player.alienNickname = (nicknameData as Record<string, string>).nickname || `Specimen ${player.name[0]}`;
-              } else if (typeof nicknameData === "string") {
-                player.alienNickname = nicknameData;
-              } else {
-                player.alienNickname = `Specimen ${player.name[0]}`;
-              }
+          // Apply nicknames
+          for (const player of state.players) {
+            const nicknameData = nicknames[player.id];
+            if (nicknameData && typeof nicknameData === "object") {
+              player.alienNickname = (nicknameData as Record<string, string>).nickname || `Specimen ${player.name[0]}`;
+            } else if (typeof nicknameData === "string") {
+              player.alienNickname = nicknameData;
+            } else {
+              player.alienNickname = `Specimen ${player.name[0]}`;
             }
-
-            // Generate intro
-            const introduction = await generateIntroduction(state.players);
-
-            state.phase = "intro";
-            addMessage(state, "alien", introduction);
-
-            // Add nickname introductions
-            for (const player of state.players) {
-              const nicknameData = nicknames[player.id];
-              let introText = `${player.name}... I'm going to call you ${player.alienNickname}.`;
-              if (nicknameData && typeof nicknameData === "object") {
-                introText = (nicknameData as Record<string, string>).introduction || introText;
-              }
-              addMessage(state, "alien", introText, player.id);
-            }
-
-            // Store conversation context
-            state.conversationContext.push({
-              role: "assistant",
-              content: `Introduction: ${introduction}. Players nicknamed: ${state.players.map((p) => `${p.name} -> ${p.alienNickname}`).join(", ")}`,
-            });
-
-            await triggerGameEvent(roomCode, "game-update", {
-              gameState: state,
-            });
-          } catch (err) {
-            console.error("Error generating intro:", err);
-            state.phase = "intro";
-            addMessage(state, "alien", "I am ZYRAX. Your planet ends tonight. One of you gets to live. Impress me.");
-            state.players.forEach((p) => {
-              p.alienNickname = `Specimen ${p.name[0].toUpperCase()}`;
-            });
-            await triggerGameEvent(roomCode, "game-update", { gameState: state });
           }
-        }, 4000); // delay for arrival animation
+
+          // Generate intro
+          const introduction = await generateIntroduction(state.players);
+
+          state.phase = "intro";
+          addMessage(state, "alien", introduction);
+
+          // Add nickname introductions
+          for (const player of state.players) {
+            const nicknameData = nicknames[player.id];
+            let introText = `${player.name}... I'm going to call you ${player.alienNickname}.`;
+            if (nicknameData && typeof nicknameData === "object") {
+              introText = (nicknameData as Record<string, string>).introduction || introText;
+            }
+            addMessage(state, "alien", introText, player.id);
+          }
+
+          // Store conversation context
+          state.conversationContext.push({
+            role: "assistant",
+            content: `Introduction: ${introduction}. Players nicknamed: ${state.players.map((p) => `${p.name} -> ${p.alienNickname}`).join(", ")}`,
+          });
+
+          await triggerGameEvent(roomCode, "game-update", {
+            gameState: state,
+          });
+        } catch (err) {
+          console.error("Error generating intro:", err);
+          state.phase = "intro";
+          addMessage(state, "alien", "I am ZYRAX. Your planet ends tonight. One of you gets to live. Impress me.");
+          state.players.forEach((p) => {
+            p.alienNickname = `Specimen ${p.name[0].toUpperCase()}`;
+          });
+          await triggerGameEvent(roomCode, "game-update", { gameState: state });
+        }
 
         return NextResponse.json({ success: true, gameState: state });
       }
@@ -320,35 +319,38 @@ export async function POST(request: NextRequest) {
             "*leans back and strokes chin thoughtfully* Hmmm... Let me think about this..."
           );
 
-          // Generate deliberation async
-          setTimeout(async () => {
-            try {
-              const { deliberation, winnerId } =
-                await generateDeliberation(state);
-              state.phase = "result";
-              state.winnerId = winnerId;
-              addMessage(state, "alien", deliberation);
+          // Send deliberation message to clients immediately
+          await triggerGameEvent(roomCode, "game-update", {
+            gameState: state,
+          });
 
-              await triggerGameEvent(roomCode, "game-update", {
-                gameState: state,
-              });
-            } catch (err) {
-              console.error("Error generating deliberation:", err);
-              const topPlayer = Object.entries(state.scores).sort(
-                ([, a], [, b]) => b - a
-              )[0];
-              state.phase = "result";
-              state.winnerId = topPlayer?.[0] || state.players[0]?.id;
-              addMessage(
-                state,
-                "alien",
-                "I've made my decision. One of you has proven... adequate."
-              );
-              await triggerGameEvent(roomCode, "game-update", {
-                gameState: state,
-              });
-            }
-          }, 3000);
+          // Generate deliberation inline (no setTimeout — Vercel freezes lambdas after response)
+          try {
+            const { deliberation, winnerId } =
+              await generateDeliberation(state);
+            state.phase = "result";
+            state.winnerId = winnerId;
+            addMessage(state, "alien", deliberation);
+
+            await triggerGameEvent(roomCode, "game-update", {
+              gameState: state,
+            });
+          } catch (err) {
+            console.error("Error generating deliberation:", err);
+            const topPlayer = Object.entries(state.scores).sort(
+              ([, a], [, b]) => b - a
+            )[0];
+            state.phase = "result";
+            state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+            addMessage(
+              state,
+              "alien",
+              "I've made my decision. One of you has proven... adequate."
+            );
+            await triggerGameEvent(roomCode, "game-update", {
+              gameState: state,
+            });
+          }
         }
 
         await triggerGameEvent(roomCode, "game-update", {
