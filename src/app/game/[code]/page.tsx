@@ -225,17 +225,15 @@ export default function GamePage() {
       <header className="flex-shrink-0 bg-space-mid/80 backdrop-blur border-b border-neon-green/20 px-4 py-3">
         <div className="flex items-center justify-between max-w-2xl mx-auto">
           <h1 className="font-pixel text-xs neon-text-green">THE EXTRACTION</h1>
-          <div className="flex items-center gap-3">
-            <span className="room-code text-xs tracking-[0.3em]">{roomCode}</span>
+          <div className="flex items-center gap-2">
+            <span className="font-pixel text-xs neon-text-yellow tracking-[0.2em]">{roomCode}</span>
             <div className="flex gap-1">
               {gameState.players.map((p) => (
                 <div
                   key={p.id}
-                  className="avatar-container w-8 h-8 text-lg"
+                  className="w-7 h-7 flex items-center justify-center text-base rounded-md"
                   style={{
-                    // @ts-expect-error custom property
-                    "--glow-color": AVATAR_CONFIG[p.avatar]?.color || "#39ff14",
-                    background: `${AVATAR_CONFIG[p.avatar]?.color}22`,
+                    background: `${AVATAR_CONFIG[p.avatar]?.color || "#39ff14"}22`,
                     opacity: p.id === playerId ? 1 : 0.6,
                   }}
                   title={p.alienNickname || p.name}
