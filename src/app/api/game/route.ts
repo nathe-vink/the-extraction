@@ -262,14 +262,14 @@ export async function POST(request: NextRequest) {
           try {
             const question = await generateQuestion(
               state,
-              roundType === "group-question" ? "group" : roundType,
+              roundType,
               targetPlayer,
               aboutPlayer
             );
 
             state.currentRound = {
               roundNumber: state.roundHistory.length + 1,
-              roundType: roundType === "group-question" ? "group" : roundType,
+              roundType: roundType,
               question,
               targetPlayerId: targetPlayer?.id,
               aboutPlayerId: aboutPlayer?.id,
@@ -303,7 +303,7 @@ export async function POST(request: NextRequest) {
             const fallback = "Tell me something that makes you worthy of salvation.";
             state.currentRound = {
               roundNumber: state.roundHistory.length + 1,
-              roundType: roundType === "group-question" ? "group" : roundType,
+              roundType: roundType,
               question: fallback,
               targetPlayerId: targetPlayer?.id,
               aboutPlayerId: aboutPlayer?.id,
