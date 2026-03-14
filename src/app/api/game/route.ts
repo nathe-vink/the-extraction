@@ -4,7 +4,7 @@ import {
   generateNicknames,
   generateIntroduction,
   generateQuestion,
-  generateReactions,
+  generateGroupReaction,
   generateDeliberation,
 } from "@/lib/alien-ai";
 import {
@@ -12,13 +12,16 @@ import {
   GameState,
   Player,
   GameMessage,
+  RoundState,
   createInitialGameState,
   generateRoomCode,
   generatePlayerId,
   getAvailableAvatar,
 } from "@/lib/types";
 
-// In-memory game store (works on Vercel when lambda stays warm)
+const ROUND_DURATION = 60000; // 60 seconds
+
+// In-memory game store
 const games = new Map<string, GameState>();
 
 function addMessage(
@@ -36,6 +39,196 @@ function addMessage(
   };
   state.messages.push(msg);
   return msg;
+}
+
+// Determine next round info
+function getNextRound(
+  state: GameState
+):
+  | "deliberation"
+  | {
+      roundType: "group" | "spotlight" | "betrayal" | "final-plea";
+      targetPlayer?: Player;
+    } {
+  const groupRounds = state.roundHistory.filter(
+    (r) => r.roundType === "group"
+  ).length;
+  const spotlightRounds = state.roundHistory.filter(
+    (r) => r.roundType === "spotlight"
+  ).length;
+  const betrayalRounds = state.roundHistory.filter(
+    (r) => r.roundType === "betrayal"
+  ).length;
+  const pleaRounds = state.roundHistory.filter(
+    (r) => r.roundType === "final-plea"
+  ).length;
+
+  if (groupRounds < 2) {
+    return { roundType: "group" };
+  }
+  if (spotlightRounds < state.players.length) {
+    const target =
+      state.players[state.currentSpotlightIndex % state.players.length];
+    return { roundType: "spotlight", targetPlayer: target };
+  }
+  if (betrayalRounds < 1) {
+    return { roundType: "betrayal" };
+  }
+  if (pleaRounds < 1) {
+    return { roundType: "final-plea" };
+  }
+  return "deliberation";
+}
+
+// Set up a new question round
+async function setupNextQuestion(
+  state: GameState,
+  roomCode: string
+): Promise<void> {
+  const next = getNextRound(state);
+
+  if (next === "deliberation") {
+    // Deliberation phase
+    state.phase = "deliberation";
+    addMessage(state, "system", "ZYRAX is making a decision...");
+    await triggerGameEvent(roomCode, "game-update", { gameState: state });
+
+    try {
+      const { deliberation, winnerId } = await generateDeliberation(state);
+      state.phase = "result";
+      state.winnerId = winnerId;
+      state.roundDeadline = null;
+      addMessage(state, "alien", deliberation);
+    } catch (err) {
+      console.error("Error generating deliberation:", err);
+      const topPlayer = Object.entries(state.scores).sort(
+        ([, a], [, b]) => b - a
+      )[0];
+      state.phase = "result";
+      state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+      state.roundDeadline = null;
+      addMessage(
+        state,
+        "alien",
+        "This has been... really something. I've made my choice."
+      );
+    }
+    await triggerGameEvent(roomCode, "game-update", { gameState: state });
+    return;
+  }
+
+  // Generate next question
+  const { roundType, targetPlayer } = next;
+
+  try {
+    const question = await generateQuestion(
+      state,
+      roundType,
+      targetPlayer
+    );
+
+    state.currentRound = {
+      roundNumber: state.roundHistory.length + 1,
+      roundType,
+      question,
+      targetPlayerId: targetPlayer?.id,
+      answers: {},
+      alienReaction: "",
+    };
+
+    if (roundType === "spotlight" && targetPlayer) {
+      addMessage(
+        state,
+        "alien",
+        `${targetPlayer.alienNickname}, this one's for you: ${question}`,
+        targetPlayer.id
+      );
+    } else {
+      addMessage(state, "alien", question);
+    }
+
+    state.conversationContext.push({
+      role: "assistant",
+      content: `Asked ${roundType} question: "${question}"${targetPlayer ? ` to ${targetPlayer.alienNickname}` : ""}`,
+    });
+
+    state.phase = "questioning";
+    state.roundDeadline = Date.now() + ROUND_DURATION;
+  } catch (err) {
+    console.error("Error generating question:", err);
+    state.currentRound = {
+      roundNumber: state.roundHistory.length + 1,
+      roundType: "group",
+      question: "Tell me something about yourselves that would surprise me.",
+      answers: {},
+      alienReaction: "",
+    };
+    addMessage(
+      state,
+      "alien",
+      "Tell me something about yourselves that would surprise me."
+    );
+    state.phase = "questioning";
+    state.roundDeadline = Date.now() + ROUND_DURATION;
+  }
+
+  await triggerGameEvent(roomCode, "game-update", { gameState: state });
+}
+
+// Process a completed round (all answers in or timer expired)
+async function processRound(
+  state: GameState,
+  roomCode: string
+): Promise<void> {
+  if (!state.currentRound) return;
+
+  const round = state.currentRound;
+
+  // Show processing state briefly
+  state.phase = "processing";
+  state.roundDeadline = null;
+  await triggerGameEvent(roomCode, "game-update", { gameState: state });
+
+  // Generate group reaction
+  try {
+    const { reaction, scores } = await generateGroupReaction(
+      state,
+      round.answers
+    );
+    round.alienReaction = reaction;
+    state.scores = { ...state.scores, ...scores };
+    addMessage(state, "alien", reaction);
+  } catch (err) {
+    console.error("Error generating reaction:", err);
+    round.alienReaction = "Interesting answers, everyone...";
+    addMessage(state, "alien", round.alienReaction);
+  }
+
+  // Update conversation context
+  state.conversationContext.push({
+    role: "user",
+    content: `Answers to "${round.question}": ${Object.entries(round.answers)
+      .map(([pid, ans]) => {
+        const p = state.players.find((pl) => pl.id === pid);
+        return `${p?.alienNickname}: "${ans}"`;
+      })
+      .join(", ")}`,
+  });
+  state.conversationContext.push({
+    role: "assistant",
+    content: round.alienReaction,
+  });
+
+  // Archive round
+  state.roundHistory.push({ ...round });
+
+  // Advance spotlight index
+  if (round.roundType === "spotlight") {
+    state.currentSpotlightIndex++;
+  }
+
+  // Set up next question (or deliberation)
+  await setupNextQuestion(state, roomCode);
 }
 
 export async function POST(request: NextRequest) {
@@ -150,212 +343,63 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // Phase: Arrival
+        // Phase: Arrival (clients see animation while we generate)
         state.phase = "arrival";
         state.gameStartedAt = Date.now();
-
         await triggerGameEvent(roomCode, "game-update", {
           gameState: state,
         });
 
-        // Generate intro inline (no setTimeout — Vercel freezes lambdas after response)
-        // Clients already see the arrival animation via the Pusher event above
+        // Generate nicknames + intro inline
         try {
-          // Generate nicknames
           const nicknames = await generateNicknames(state.players);
 
-          // Apply nicknames
           for (const player of state.players) {
             const nicknameData = nicknames[player.id];
             if (nicknameData && typeof nicknameData === "object") {
-              player.alienNickname = (nicknameData as Record<string, string>).nickname || `Specimen ${player.name[0]}`;
+              player.alienNickname =
+                (nicknameData as Record<string, string>).nickname ||
+                `Friend ${player.name[0]}`;
             } else if (typeof nicknameData === "string") {
               player.alienNickname = nicknameData;
             } else {
-              player.alienNickname = `Specimen ${player.name[0]}`;
+              player.alienNickname = `Friend ${player.name[0]}`;
             }
           }
 
-          // Generate intro
           const introduction = await generateIntroduction(state.players);
-
-          state.phase = "intro";
           addMessage(state, "alien", introduction);
 
-          // Add nickname introductions
-          for (const player of state.players) {
-            const nicknameData = nicknames[player.id];
-            let introText = `${player.name}... I'm going to call you ${player.alienNickname}.`;
-            if (nicknameData && typeof nicknameData === "object") {
-              introText = (nicknameData as Record<string, string>).introduction || introText;
-            }
-            addMessage(state, "alien", introText, player.id);
-          }
+          // Single group nickname announcement
+          const nicknameList = state.players
+            .map((p) => {
+              const nd = nicknames[p.id];
+              if (nd && typeof nd === "object") {
+                return (nd as Record<string, string>).introduction || `${p.name} — I'll call you ${p.alienNickname}.`;
+              }
+              return `${p.name} — I'll call you ${p.alienNickname}.`;
+            })
+            .join(" ");
+          addMessage(state, "alien", nicknameList);
 
-          // Store conversation context
           state.conversationContext.push({
             role: "assistant",
-            content: `Introduction: ${introduction}. Players nicknamed: ${state.players.map((p) => `${p.name} -> ${p.alienNickname}`).join(", ")}`,
-          });
-
-          await triggerGameEvent(roomCode, "game-update", {
-            gameState: state,
+            content: `Introduction: ${introduction}. Nicknames: ${state.players.map((p) => `${p.name} -> ${p.alienNickname}`).join(", ")}`,
           });
         } catch (err) {
           console.error("Error generating intro:", err);
-          state.phase = "intro";
-          addMessage(state, "alien", "I am ZYRAX. Your planet ends tonight. One of you gets to live. Impress me.");
-          state.players.forEach((p) => {
-            p.alienNickname = `Specimen ${p.name[0].toUpperCase()}`;
-          });
-          await triggerGameEvent(roomCode, "game-update", { gameState: state });
-        }
-
-        return NextResponse.json({ success: true, gameState: state });
-      }
-
-      case "advance": {
-        const { roomCode, gameState: clientState } = body;
-        let state = games.get(roomCode);
-        if (!state) {
-          return NextResponse.json({
-            success: false,
-            error: "Room not found",
-          });
-        }
-
-        // Determine next phase
-        const nextPhase = getNextPhase(state);
-
-        if (!nextPhase) {
-          return NextResponse.json({
-            success: false,
-            error: "Game is over",
-          });
-        }
-
-        state.phase = nextPhase;
-
-        if (
-          nextPhase === "group-question" ||
-          nextPhase === "hot-seat" ||
-          nextPhase === "espionage" ||
-          nextPhase === "final-plea"
-        ) {
-          let roundType = nextPhase === "group-question" ? "group" as const : nextPhase as "hot-seat" | "espionage" | "final-plea";
-
-          let targetPlayer: Player | undefined;
-          let aboutPlayer: Player | undefined;
-
-          if (nextPhase === "hot-seat") {
-            targetPlayer = state.players[state.currentHotSeatIndex % state.players.length];
-          } else if (nextPhase === "espionage") {
-            targetPlayer = state.players[state.currentEspionageIndex % state.players.length];
-            // Pick someone else to ask about
-            const others = state.players.filter((p) => p.id !== targetPlayer!.id);
-            aboutPlayer = others[Math.floor(Math.random() * others.length)];
-          } else if (nextPhase === "final-plea") {
-            targetPlayer = state.players[state.currentFinalPleaIndex % state.players.length];
-          }
-
-          try {
-            const question = await generateQuestion(
-              state,
-              roundType,
-              targetPlayer,
-              aboutPlayer
-            );
-
-            state.currentRound = {
-              roundNumber: state.roundHistory.length + 1,
-              roundType: roundType,
-              question,
-              targetPlayerId: targetPlayer?.id,
-              aboutPlayerId: aboutPlayer?.id,
-              answers: {},
-              revealed: false,
-              alienReactions: {},
-            };
-
-            const questionPrefix =
-              nextPhase === "hot-seat"
-                ? `*turns to ${targetPlayer?.alienNickname}* `
-                : nextPhase === "espionage"
-                  ? `*eyes ${targetPlayer?.alienNickname} with a knowing grin* `
-                  : nextPhase === "final-plea"
-                    ? `*gestures to ${targetPlayer?.alienNickname}* `
-                    : "";
-
-            addMessage(
-              state,
-              "alien",
-              questionPrefix + question,
-              targetPlayer?.id
-            );
-
-            state.conversationContext.push({
-              role: "assistant",
-              content: `Asked ${nextPhase} question: "${question}"${targetPlayer ? ` to ${targetPlayer.alienNickname}` : ""}${aboutPlayer ? ` about ${aboutPlayer.alienNickname}` : ""}`,
-            });
-          } catch (err) {
-            console.error("Error generating question:", err);
-            const fallback = "Tell me something that makes you worthy of salvation.";
-            state.currentRound = {
-              roundNumber: state.roundHistory.length + 1,
-              roundType: roundType,
-              question: fallback,
-              targetPlayerId: targetPlayer?.id,
-              aboutPlayerId: aboutPlayer?.id,
-              answers: {},
-              revealed: false,
-              alienReactions: {},
-            };
-            addMessage(state, "alien", fallback, targetPlayer?.id);
-          }
-        } else if (nextPhase === "deliberation") {
           addMessage(
             state,
             "alien",
-            "*leans back and strokes chin thoughtfully* Hmmm... Let me think about this..."
+            "Hey everyone. So... my people are going to destroy Earth. Not my call, I'm really sorry. But I can save ONE of you. Let's figure out who, yeah?"
           );
-
-          // Send deliberation message to clients immediately
-          await triggerGameEvent(roomCode, "game-update", {
-            gameState: state,
+          state.players.forEach((p) => {
+            p.alienNickname = `Friend ${p.name[0].toUpperCase()}`;
           });
-
-          // Generate deliberation inline (no setTimeout — Vercel freezes lambdas after response)
-          try {
-            const { deliberation, winnerId } =
-              await generateDeliberation(state);
-            state.phase = "result";
-            state.winnerId = winnerId;
-            addMessage(state, "alien", deliberation);
-
-            await triggerGameEvent(roomCode, "game-update", {
-              gameState: state,
-            });
-          } catch (err) {
-            console.error("Error generating deliberation:", err);
-            const topPlayer = Object.entries(state.scores).sort(
-              ([, a], [, b]) => b - a
-            )[0];
-            state.phase = "result";
-            state.winnerId = topPlayer?.[0] || state.players[0]?.id;
-            addMessage(
-              state,
-              "alien",
-              "I've made my decision. One of you has proven... adequate."
-            );
-            await triggerGameEvent(roomCode, "game-update", {
-              gameState: state,
-            });
-          }
         }
 
-        await triggerGameEvent(roomCode, "game-update", {
-          gameState: state,
-        });
+        // Immediately set up first question
+        await setupNextQuestion(state, roomCode);
 
         return NextResponse.json({ success: true, gameState: state });
       }
@@ -370,96 +414,53 @@ export async function POST(request: NextRequest) {
           });
         }
 
+        // Ignore if already in processing/deliberation
+        if (state.phase !== "questioning") {
+          return NextResponse.json({ success: true, gameState: state });
+        }
+
         state.currentRound.answers[playerId] = answer;
         const player = state.players.find((p) => p.id === playerId);
 
-        // Check if all expected players have answered
-        const isGroupRound = state.currentRound.roundType === "group";
-        const expectedAnswers = isGroupRound
-          ? state.players.length
-          : 1; // Individual rounds only need 1 answer
-
-        const answerCount = Object.keys(state.currentRound.answers).length;
-
-        // Notify others that someone submitted
-        await triggerGameEvent(roomCode, "answer-submitted", {
+        // Broadcast live answer to all clients
+        await triggerGameEvent(roomCode, "answer-live", {
           playerId,
-          playerNickname: player?.alienNickname,
-          answerCount,
-          expectedAnswers,
+          playerNickname: player?.alienNickname || player?.name || "Someone",
+          answer,
+          answerCount: Object.keys(state.currentRound.answers).length,
+          expectedAnswers:
+            state.currentRound.roundType === "spotlight"
+              ? 1
+              : state.players.length,
         });
 
-        if (answerCount >= expectedAnswers) {
-          // All answers in — reveal and get alien reactions
-          state.currentRound.revealed = true;
-          state.phase = "answer-reveal";
+        // Check if all expected answers are in
+        const isIndividual = state.currentRound.roundType === "spotlight";
+        const expectedAnswers = isIndividual ? 1 : state.players.length;
+        const answerCount = Object.keys(state.currentRound.answers).length;
 
-          await triggerGameEvent(roomCode, "game-update", {
+        if (answerCount >= expectedAnswers) {
+          // All answers in — process the round
+          await processRound(state, roomCode);
+        }
+
+        return NextResponse.json({ success: true, gameState: state });
+      }
+
+      case "timer-expire": {
+        const { roomCode } = body;
+        const state = games.get(roomCode);
+
+        // Only process if still in questioning phase (prevents duplicate processing)
+        if (!state || state.phase !== "questioning" || !state.currentRound) {
+          return NextResponse.json({
+            success: true,
             gameState: state,
           });
-
-          // Get alien reactions
-          try {
-            const { reactions, scores, alienSummary } =
-              await generateReactions(state, state.currentRound.answers);
-
-            state.currentRound.alienReactions = reactions;
-            state.scores = scores;
-            state.phase = "alien-react";
-
-            // Add reaction messages
-            for (const [pid, reaction] of Object.entries(reactions)) {
-              const p = state.players.find((pl) => pl.id === pid);
-              addMessage(
-                state,
-                "alien",
-                `*looks at ${p?.alienNickname}* ${reaction}`,
-                pid
-              );
-            }
-
-            addMessage(state, "alien", alienSummary);
-
-            // Update conversation context
-            state.conversationContext.push({
-              role: "user",
-              content: `Player answers: ${Object.entries(state.currentRound.answers)
-                .map(([pid, ans]) => {
-                  const p = state.players.find((pl) => pl.id === pid);
-                  return `${p?.alienNickname}: "${ans}"`;
-                })
-                .join(", ")}`,
-            });
-            state.conversationContext.push({
-              role: "assistant",
-              content: `Reactions: ${JSON.stringify(reactions)}. Summary: ${alienSummary}`,
-            });
-
-            // Archive round
-            state.roundHistory.push({ ...state.currentRound });
-
-            // Advance index for sequential rounds
-            if (state.currentRound.roundType === "hot-seat") {
-              state.currentHotSeatIndex++;
-            } else if (state.currentRound.roundType === "espionage") {
-              state.currentEspionageIndex++;
-            } else if (state.currentRound.roundType === "final-plea") {
-              state.currentFinalPleaIndex++;
-            }
-
-            await triggerGameEvent(roomCode, "game-update", {
-              gameState: state,
-            });
-          } catch (err) {
-            console.error("Error generating reactions:", err);
-            state.phase = "alien-react";
-            addMessage(state, "alien", "Hmm... interesting responses, all of you.");
-            state.roundHistory.push({ ...state.currentRound });
-            await triggerGameEvent(roomCode, "game-update", {
-              gameState: state,
-            });
-          }
         }
+
+        // Process with whatever answers we have
+        await processRound(state, roomCode);
 
         return NextResponse.json({ success: true, gameState: state });
       }
@@ -477,64 +478,4 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
-}
-
-function getNextPhase(state: GameState): GamePhase | null {
-  const { phase, roundHistory, players } = state;
-  const groupRoundsPlayed = roundHistory.filter(
-    (r) => r.roundType === "group"
-  ).length;
-  const hotSeatRoundsPlayed = roundHistory.filter(
-    (r) => r.roundType === "hot-seat"
-  ).length;
-  const espionageRoundsPlayed = roundHistory.filter(
-    (r) => r.roundType === "espionage"
-  ).length;
-  const finalPleaRoundsPlayed = roundHistory.filter(
-    (r) => r.roundType === "final-plea"
-  ).length;
-
-  // Game flow:
-  // 1. Two group rounds
-  // 2. Hot seat (one per player)
-  // 3. Espionage (one per player)
-  // 4. Final plea (one per player)
-  // 5. Deliberation
-
-  if (phase === "intro" || (phase === "alien-react" && groupRoundsPlayed < 2)) {
-    return "group-question";
-  }
-
-  if (
-    phase === "alien-react" &&
-    groupRoundsPlayed >= 2 &&
-    hotSeatRoundsPlayed < players.length
-  ) {
-    return "hot-seat";
-  }
-
-  if (
-    phase === "alien-react" &&
-    hotSeatRoundsPlayed >= players.length &&
-    espionageRoundsPlayed < players.length
-  ) {
-    return "espionage";
-  }
-
-  if (
-    phase === "alien-react" &&
-    espionageRoundsPlayed >= players.length &&
-    finalPleaRoundsPlayed < players.length
-  ) {
-    return "final-plea";
-  }
-
-  if (
-    phase === "alien-react" &&
-    finalPleaRoundsPlayed >= players.length
-  ) {
-    return "deliberation";
-  }
-
-  return null;
 }

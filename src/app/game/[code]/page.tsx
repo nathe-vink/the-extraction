@@ -4,7 +4,14 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { getPusherClient } from "@/lib/pusher-client";
 import { GameState, Player, GameMessage, AVATAR_CONFIG } from "@/lib/types";
+import { PixelAvatar } from "@/components/PixelAvatar";
 import type { Channel } from "pusher-js";
+
+interface LiveAnswer {
+  playerId: string;
+  playerNickname: string;
+  answer: string;
+}
 
 export default function GamePage() {
   const params = useParams();
@@ -14,23 +21,22 @@ export default function GamePage() {
   const [playerId, setPlayerId] = useState<string>("");
   const [answer, setAnswer] = useState("");
   const [submittedAnswer, setSubmittedAnswer] = useState(false);
-  const [answerCount, setAnswerCount] = useState(0);
-  const [alienTyping, setAlienTyping] = useState(false);
-  const [showingMessages, setShowingMessages] = useState<GameMessage[]>([]);
-  const [burnPhase, setBurnPhase] = useState(0); // 0=none, 1=fire, 2=skeleton, 3=ash
+  const [liveAnswers, setLiveAnswers] = useState<LiveAnswer[]>([]);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [burnPhase, setBurnPhase] = useState(0);
   const [shipVisible, setShipVisible] = useState(false);
   const [shipDeparting, setShipDeparting] = useState(false);
   const [beamActive, setBeamActive] = useState(false);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<Channel | null>(null);
-  const lastMessageCountRef = useRef(0);
+  const timerExpiredRef = useRef(false);
 
   // Initialize
   useEffect(() => {
     const pid = localStorage.getItem("playerId") || "";
     setPlayerId(pid);
 
-    // Fetch initial state
     fetch("/alien/api/game", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -40,26 +46,37 @@ export default function GamePage() {
       .then((data) => {
         if (data.success && data.gameState) {
           setGameState(data.gameState);
-          setShowingMessages(data.gameState.messages || []);
+          setInitialLoadDone(true);
         }
       });
 
-    // Subscribe to Pusher
     const pusher = getPusherClient();
     const channel = pusher.subscribe(`game-${roomCode}`);
     channelRef.current = channel;
 
     channel.bind("game-update", (data: { gameState: GameState }) => {
       setGameState(data.gameState);
-      setSubmittedAnswer(false);
-      setAnswer("");
-      setAnswerCount(0);
+      // Reset answer state when phase changes to questioning
+      if (data.gameState.phase === "questioning") {
+        setSubmittedAnswer(false);
+        setAnswer("");
+        setLiveAnswers([]);
+        timerExpiredRef.current = false;
+      }
     });
 
     channel.bind(
-      "answer-submitted",
-      (data: { playerId: string; answerCount: number }) => {
-        setAnswerCount(data.answerCount);
+      "answer-live",
+      (data: {
+        playerId: string;
+        playerNickname: string;
+        answer: string;
+      }) => {
+        setLiveAnswers((prev) => {
+          // Don't add duplicates
+          if (prev.some((a) => a.playerId === data.playerId)) return prev;
+          return [...prev, data];
+        });
       }
     );
 
@@ -73,47 +90,40 @@ export default function GamePage() {
     };
   }, [roomCode]);
 
-  // Auto-scroll messages and animate new ones
+  // Countdown timer
   useEffect(() => {
-    if (!gameState) return;
-    const messages = gameState.messages || [];
-
-    if (messages.length > lastMessageCountRef.current) {
-      // New messages arrived - show typing animation then reveal
-      const newMessages = messages.slice(lastMessageCountRef.current);
-      const existingMessages = messages.slice(0, lastMessageCountRef.current);
-
-      let delay = 0;
-      const animatedMessages: GameMessage[] = [...existingMessages];
-
-      newMessages.forEach((msg, i) => {
-        if (msg.sender === "alien") {
-          delay += 800; // typing delay for alien messages
-        }
-        setTimeout(() => {
-          setAlienTyping(false);
-          setShowingMessages((prev) => [...prev, msg]);
-        }, delay);
-
-        if (msg.sender === "alien" && i < newMessages.length - 1) {
-          setTimeout(() => setAlienTyping(true), delay - 700);
-        }
-
-        delay += 300;
-      });
-
-      if (newMessages[0]?.sender === "alien") {
-        setAlienTyping(true);
-      }
-
-      lastMessageCountRef.current = messages.length;
+    if (!gameState?.roundDeadline || gameState.phase !== "questioning") {
+      setTimeLeft(null);
+      return;
     }
-  }, [gameState?.messages?.length]);
+
+    const tick = () => {
+      const remaining = Math.max(
+        0,
+        Math.ceil((gameState.roundDeadline! - Date.now()) / 1000)
+      );
+      setTimeLeft(remaining);
+
+      if (remaining <= 0 && !timerExpiredRef.current) {
+        timerExpiredRef.current = true;
+        // Trigger timer expiry on server
+        fetch("/alien/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "timer-expire", roomCode }),
+        });
+      }
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [gameState?.roundDeadline, gameState?.phase, roomCode]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [showingMessages, alienTyping]);
+  }, [gameState?.messages?.length, liveAnswers.length]);
 
   // Handle arrival animation
   useEffect(() => {
@@ -125,7 +135,6 @@ export default function GamePage() {
   // Handle result/departure phase
   useEffect(() => {
     if (gameState?.phase === "result" && gameState.winnerId) {
-      // Start departure sequence after a delay
       const timer1 = setTimeout(() => setBeamActive(true), 3000);
       const timer2 = setTimeout(() => {
         setShipDeparting(true);
@@ -163,20 +172,13 @@ export default function GamePage() {
   );
 
   const handleStartGame = async () => {
-    setAlienTyping(true);
     await callAPI("start");
   };
 
   const handleSubmitAnswer = async () => {
     if (!answer.trim()) return;
     setSubmittedAnswer(true);
-    setAlienTyping(true);
     await callAPI("submit-answer", { answer: answer.trim() });
-  };
-
-  const handleAdvance = async () => {
-    setAlienTyping(true);
-    await callAPI("advance", { gameState });
   };
 
   if (!gameState) {
@@ -196,55 +198,66 @@ export default function GamePage() {
   const isHost = currentPlayer?.isHost || false;
   const phase = gameState.phase;
 
-  // Determine if current player should be able to answer
+  // Can current player answer?
   const canAnswer = (() => {
     if (!gameState.currentRound || submittedAnswer) return false;
-    if (
-      phase !== "group-question" &&
-      phase !== "hot-seat" &&
-      phase !== "espionage" &&
-      phase !== "final-plea"
-    )
-      return false;
-
+    if (phase !== "questioning") return false;
     const round = gameState.currentRound;
-    if (round.roundType === "group") return true;
-
-    // Individual rounds: only the target player answers
-    return round.targetPlayerId === playerId;
+    if (round.roundType === "spotlight") {
+      return round.targetPlayerId === playerId;
+    }
+    return true; // group, betrayal, final-plea: everyone answers
   })();
 
-  // Can the host advance?
-  const canAdvance =
-    isHost &&
-    (phase === "intro" || phase === "alien-react");
+  // Timer bar percentage
+  const timerPercent =
+    timeLeft !== null ? Math.max(0, (timeLeft / 60) * 100) : 0;
+  const timerColor =
+    timeLeft !== null && timeLeft <= 10
+      ? "var(--neon-pink)"
+      : "var(--neon-green)";
 
   return (
     <div className="flex flex-col h-screen max-h-screen overflow-hidden">
       {/* Header */}
-      <header className="flex-shrink-0 bg-space-mid/80 backdrop-blur border-b border-neon-green/20 px-4 py-3">
+      <header className="flex-shrink-0 bg-space-mid/80 backdrop-blur border-b border-neon-green/20 px-4 py-2">
         <div className="flex items-center justify-between max-w-2xl mx-auto">
-          <h1 className="font-pixel text-xs neon-text-green">THE EXTRACTION</h1>
+          <h1 className="font-pixel text-[10px] neon-text-green leading-none">
+            THE EXTRACTION
+          </h1>
           <div className="flex items-center gap-2">
-            <span className="font-pixel text-xs neon-text-yellow tracking-[0.2em]">{roomCode}</span>
-            <div className="flex gap-1">
+            <span className="font-pixel text-[10px] neon-text-yellow tracking-widest">
+              {roomCode}
+            </span>
+            <div className="flex gap-0.5">
               {gameState.players.map((p) => (
                 <div
                   key={p.id}
-                  className="w-7 h-7 flex items-center justify-center text-base rounded-md"
-                  style={{
-                    background: `${AVATAR_CONFIG[p.avatar]?.color || "#39ff14"}22`,
-                    opacity: p.id === playerId ? 1 : 0.6,
-                  }}
+                  className="relative"
                   title={p.alienNickname || p.name}
+                  style={{ opacity: p.id === playerId ? 1 : 0.6 }}
                 >
-                  {AVATAR_CONFIG[p.avatar]?.emoji || "\uD83D\uDC64"}
+                  <PixelAvatar type={p.avatar} size={24} />
                 </div>
               ))}
             </div>
           </div>
         </div>
       </header>
+
+      {/* Timer bar */}
+      {phase === "questioning" && timeLeft !== null && (
+        <div className="flex-shrink-0 h-1 bg-space-mid/50">
+          <div
+            className="h-full transition-all duration-1000 ease-linear"
+            style={{
+              width: `${timerPercent}%`,
+              backgroundColor: timerColor,
+              boxShadow: `0 0 8px ${timerColor}`,
+            }}
+          />
+        </div>
+      )}
 
       {/* Main content area */}
       <main className="flex-1 overflow-hidden flex flex-col max-w-2xl mx-auto w-full">
@@ -269,19 +282,10 @@ export default function GamePage() {
               {gameState.players.map((p, i) => (
                 <div
                   key={p.id}
-                  className="flex items-center gap-3 p-3 rounded-lg bg-space-light/50 border border-white/5 animate-slide-up"
+                  className="flex items-center gap-3 p-3 rounded-lg bg-white/5 border border-white/5 animate-slide-up"
                   style={{ animationDelay: `${i * 100}ms` }}
                 >
-                  <div
-                    className="avatar-container w-12 h-12 text-2xl"
-                    style={{
-                      // @ts-expect-error custom property
-                      "--glow-color": AVATAR_CONFIG[p.avatar]?.color,
-                      background: `${AVATAR_CONFIG[p.avatar]?.color}22`,
-                    }}
-                  >
-                    {AVATAR_CONFIG[p.avatar]?.emoji}
-                  </div>
+                  <PixelAvatar type={p.avatar} size={40} />
                   <div className="flex-1">
                     <p className="text-white font-semibold">{p.name}</p>
                     <p className="text-gray-500 text-xs">
@@ -331,7 +335,7 @@ export default function GamePage() {
               &#x1F6F8;
             </div>
             <div className="mt-8 text-center">
-              <p className="font-pixel text-sm neon-text-green animate-pulse-neon">
+              <p className="font-pixel text-sm neon-text-green animate-pulse">
                 INCOMING TRANSMISSION
               </p>
               <div className="typing-indicator justify-center mt-4">
@@ -348,50 +352,46 @@ export default function GamePage() {
           <>
             {/* Messages area */}
             <div className="flex-1 overflow-y-auto message-scroll p-4 space-y-3">
-              {showingMessages.map((msg, i) => (
+              {gameState.messages.map((msg, i) => (
                 <MessageBubble
                   key={msg.id || i}
                   message={msg}
                   players={gameState.players}
                   currentPlayerId={playerId}
-                  index={i}
+                  isNew={initialLoadDone && i >= (gameState.messages.length - 1)}
                 />
               ))}
 
-              {/* Show revealed answers */}
-              {phase === "answer-reveal" && gameState.currentRound?.revealed && (
-                <div className="space-y-2 animate-fade-in">
-                  <p className="font-pixel text-xs neon-text-blue text-center my-2">
-                    ANSWERS REVEALED
+              {/* Live answers appearing in real-time */}
+              {liveAnswers.length > 0 && phase === "questioning" && (
+                <div className="space-y-2">
+                  <p className="font-pixel text-[10px] neon-text-blue text-center my-2">
+                    ANSWERS
                   </p>
-                  {Object.entries(gameState.currentRound.answers).map(
-                    ([pid, ans]) => {
-                      const p = gameState.players.find(
-                        (pl) => pl.id === pid
-                      );
-                      return (
-                        <div
-                          key={pid}
-                          className="player-bubble p-3 ml-8 animate-slide-up"
-                        >
-                          <p className="text-xs text-neon-purple mb-1 font-semibold">
-                            {p?.alienNickname || p?.name}
-                          </p>
-                          <p className="text-gray-200 text-sm">{ans}</p>
-                        </div>
-                      );
-                    }
-                  )}
+                  {liveAnswers.map((la) => (
+                    <div
+                      key={la.playerId}
+                      className="player-bubble p-3 ml-8 animate-slide-up"
+                    >
+                      <p className="text-xs text-neon-purple mb-1 font-semibold">
+                        {la.playerNickname}
+                        {la.playerId === playerId ? " (you)" : ""}
+                      </p>
+                      <p className="text-gray-200 text-sm">{la.answer}</p>
+                    </div>
+                  ))}
                 </div>
               )}
 
-              {/* Typing indicator */}
-              {alienTyping && (
-                <div className="alien-bubble p-3 ml-8">
-                  <div className="typing-indicator">
-                    <span />
-                    <span />
-                    <span />
+              {/* Processing indicator */}
+              {(phase === "processing" || phase === "deliberation") && (
+                <div className="text-center py-4">
+                  <div className="alien-bubble p-3 ml-8 inline-block">
+                    <div className="typing-indicator">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
                   </div>
                 </div>
               )}
@@ -414,19 +414,20 @@ export default function GamePage() {
             </div>
 
             {/* Answer input area */}
-            <div className="flex-shrink-0 border-t border-neon-green/20 bg-space-mid/80 backdrop-blur p-4">
+            <div className="flex-shrink-0 border-t border-neon-green/20 bg-space-mid/80 backdrop-blur p-3">
               {canAnswer && (
                 <div className="max-w-2xl mx-auto">
+                  {timeLeft !== null && (
+                    <p className="text-center font-pixel text-xs mb-2" style={{ color: timerColor }}>
+                      {timeLeft}s
+                    </p>
+                  )}
                   <div className="flex gap-2">
                     <input
                       type="text"
                       value={answer}
                       onChange={(e) => setAnswer(e.target.value)}
-                      placeholder={
-                        gameState.currentRound?.roundType === "espionage"
-                          ? "Time to betray..."
-                          : "Type your response..."
-                      }
+                      placeholder="Type your answer..."
                       maxLength={500}
                       autoFocus
                       onKeyDown={(e) => {
@@ -445,70 +446,47 @@ export default function GamePage() {
                       Send
                     </button>
                   </div>
-                  <p className="text-gray-600 text-xs mt-1">
-                    {answer.length}/500
-                  </p>
                 </div>
               )}
 
-              {submittedAnswer &&
-                (phase === "group-question" ||
-                  phase === "hot-seat" ||
-                  phase === "espionage" ||
-                  phase === "final-plea") && (
-                  <div className="text-center">
-                    <p className="neon-text-green text-sm font-mono">
-                      Answer submitted &#x2713;
-                    </p>
-                    {gameState.currentRound?.roundType === "group" && (
-                      <p className="text-gray-500 text-xs mt-1">
-                        Waiting for others... ({answerCount}/
-                        {gameState.players.length})
-                      </p>
-                    )}
-                  </div>
-                )}
-
-              {canAdvance && (
+              {submittedAnswer && phase === "questioning" && (
                 <div className="text-center">
-                  <button
-                    onClick={handleAdvance}
-                    className="btn-neon px-8 py-3"
-                  >
-                    Continue &#x25B6;
-                  </button>
+                  <p className="neon-text-green text-sm font-mono">
+                    Answer submitted &#x2713;
+                  </p>
+                  {gameState.currentRound?.roundType !== "spotlight" && (
+                    <p className="text-gray-500 text-xs mt-1">
+                      Waiting for others... ({liveAnswers.length}/
+                      {gameState.players.length})
+                    </p>
+                  )}
                 </div>
               )}
 
               {!canAnswer &&
-                !canAdvance &&
                 !submittedAnswer &&
-                phase !== "result" &&
-                phase !== "deliberation" &&
-                phase !== "departure" &&
-                phase !== "answer-reveal" && (
+                phase === "questioning" &&
+                gameState.currentRound?.roundType === "spotlight" &&
+                gameState.currentRound?.targetPlayerId !== playerId && (
                   <div className="text-center">
                     <p className="text-gray-500 text-sm font-mono">
-                      {phase === "alien-react"
-                        ? isHost
-                          ? "Press Continue when ready"
-                          : "Waiting for host..."
-                        : "Watching..."}
+                      Watching the spotlight...
                     </p>
                   </div>
                 )}
 
-              {(phase === "deliberation" || phase === "answer-reveal") && (
+              {phase === "processing" && (
                 <div className="text-center">
-                  <div className="typing-indicator justify-center">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                  <p className="text-gray-500 text-xs mt-1">
-                    {phase === "deliberation"
-                      ? "ZYRAX is deliberating..."
-                      : "Processing answers..."}
+                  <p className="text-gray-500 text-xs font-mono">
+                    ZYRAX is thinking...
+                  </p>
+                </div>
+              )}
+
+              {phase === "deliberation" && (
+                <div className="text-center">
+                  <p className="text-gray-500 text-xs font-mono">
+                    ZYRAX is making a decision...
                   </p>
                 </div>
               )}
@@ -526,12 +504,12 @@ function MessageBubble({
   message,
   players,
   currentPlayerId,
-  index,
+  isNew,
 }: {
   message: GameMessage;
   players: Player[];
   currentPlayerId: string;
-  index: number;
+  isNew: boolean;
 }) {
   const isAlien = message.sender === "alien";
   const isSystem = message.sender === "system";
@@ -539,9 +517,11 @@ function MessageBubble({
     ? players.find((p) => p.id === message.targetPlayer)
     : null;
 
+  const animClass = isNew ? "animate-slide-up" : "";
+
   if (isSystem) {
     return (
-      <div className="text-center py-2 animate-fade-in">
+      <div className={`text-center py-2 ${animClass}`}>
         <p className="text-gray-500 text-xs font-pixel">{message.text}</p>
       </div>
     );
@@ -551,12 +531,11 @@ function MessageBubble({
     const isTargeted = message.targetPlayer === currentPlayerId;
     return (
       <div
-        className={`animate-slide-up ${isTargeted ? "ring-1 ring-neon-green/30 rounded-lg" : ""}`}
-        style={{ animationDelay: `${(index % 5) * 100}ms` }}
+        className={`${animClass} ${isTargeted ? "ring-1 ring-neon-green/30 rounded-lg" : ""}`}
       >
         {targetPlayer && (
           <p className="text-xs text-neon-blue ml-8 mb-1 font-pixel">
-            &#x25B6; TO: {targetPlayer.alienNickname || targetPlayer.name}
+            &#x25B6; {targetPlayer.alienNickname || targetPlayer.name}
             {isTargeted ? " (you)" : ""}
           </p>
         )}
@@ -572,7 +551,7 @@ function MessageBubble({
   // Player message
   const sender = players.find((p) => p.id === message.sender);
   return (
-    <div className="player-bubble p-3 ml-8 animate-slide-up">
+    <div className={`player-bubble p-3 ml-8 ${animClass}`}>
       <p className="text-xs text-neon-purple mb-1 font-semibold">
         {sender?.alienNickname || sender?.name || "Unknown"}
         {message.sender === currentPlayerId ? " (you)" : ""}
@@ -603,27 +582,22 @@ function ResultScene({
 
   return (
     <div className="space-y-8">
-      {/* Spaceship */}
       <div
         className={`text-6xl ${shipDeparting ? "animate-ship-depart" : "animate-float"}`}
       >
         &#x1F6F8;
       </div>
 
-      {/* Beam */}
       {beamActive && (
         <div className="beam h-32 animate-beam-down mx-auto rounded-b-full" />
       )}
 
-      {/* Winner */}
       <div className="space-y-2">
         <p className="font-pixel text-xs neon-text-green">THE CHOSEN ONE</p>
         <div
           className={`inline-flex flex-col items-center gap-2 p-4 rounded-xl bg-neon-green/10 border border-neon-green/30 ${beamActive ? "animate-float" : ""}`}
         >
-          <span className="text-4xl">
-            {AVATAR_CONFIG[winner?.avatar || "hillbilly"]?.emoji}
-          </span>
+          <PixelAvatar type={winner?.avatar || "hillbilly"} size={48} />
           <p className="text-white font-bold">
             {winner?.alienNickname || winner?.name}
           </p>
@@ -635,7 +609,6 @@ function ResultScene({
         </div>
       </div>
 
-      {/* Losers */}
       {burnPhase > 0 && (
         <div className="space-y-2">
           <p className="font-pixel text-xs text-red-400">LEFT BEHIND</p>
@@ -651,13 +624,13 @@ function ResultScene({
                       : "burn-phase-3"
                 }`}
               >
-                <span className="text-3xl">
-                  {burnPhase <= 1
-                    ? AVATAR_CONFIG[p.avatar]?.emoji
-                    : burnPhase === 2
-                      ? "\uD83D\uDC80"
-                      : "\u2728"}
-                </span>
+                {burnPhase <= 1 ? (
+                  <PixelAvatar type={p.avatar} size={36} />
+                ) : (
+                  <span className="text-3xl">
+                    {burnPhase === 2 ? "\uD83D\uDC80" : "\u2728"}
+                  </span>
+                )}
                 <p className="text-xs text-gray-400">
                   {p.alienNickname || p.name}
                 </p>
@@ -670,7 +643,6 @@ function ResultScene({
         </div>
       )}
 
-      {/* Game over */}
       {burnPhase >= 3 && (
         <div className="animate-fade-in space-y-4 mt-8">
           <p className="font-pixel text-lg neon-text-pink">GAME OVER</p>
@@ -680,7 +652,7 @@ function ResultScene({
               : "You've been reduced to cosmic dust. Better luck next apocalypse."}
           </p>
           <button
-            onClick={() => (window.location.href = "/")}
+            onClick={() => (window.location.href = "/alien")}
             className="btn-neon btn-neon-pink"
           >
             Play Again

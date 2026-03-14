@@ -80,9 +80,7 @@ export default function Home() {
       {/* Title */}
       <div className="text-center mb-12 animate-fade-in">
         <div className="text-6xl mb-4 animate-float">&#x1F6F8;</div>
-        <h1
-          className="font-pixel text-2xl sm:text-4xl neon-text-green mb-4 tracking-wider"
-        >
+        <h1 className="font-pixel text-2xl sm:text-4xl neon-text-green mb-4 tracking-wider">
           THE EXTRACTION
         </h1>
         <p className="text-sm sm:text-base text-gray-400 max-w-md mx-auto font-mono">
@@ -197,7 +195,7 @@ export default function Home() {
         )}
 
         {error && (
-          <p className="text-red-400 text-sm text-center font-mono animate-glitch">
+          <p className="text-red-400 text-sm text-center font-mono">
             {error}
           </p>
         )}
@@ -205,7 +203,7 @@ export default function Home() {
 
       {/* Footer */}
       <div className="mt-16 text-center text-gray-600 text-xs">
-        <p>2-8 players &middot; 20-30 minutes &middot; Betrayal guaranteed</p>
+        <p>2-8 players &middot; 15-20 minutes &middot; Betrayal guaranteed</p>
       </div>
     </main>
   );
