@@ -19,7 +19,7 @@ export default function Home() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/alien/api/game", {
+      const res = await fetch("/api/game", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "create", playerName: playerName.trim() }),
@@ -59,7 +59,7 @@ export default function Home() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/alien/api/game", {
+      const res = await fetch("/api/game", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

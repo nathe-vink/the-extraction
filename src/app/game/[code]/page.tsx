@@ -38,7 +38,7 @@ export default function GamePage() {
     const pid = localStorage.getItem("playerId") || "";
     setPlayerId(pid);
 
-    fetch("/alien/api/game", {
+    fetch("/api/game", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "get-state", roomCode }),
@@ -108,7 +108,7 @@ export default function GamePage() {
       if (remaining <= 0 && !timerExpiredRef.current) {
         timerExpiredRef.current = true;
         // Trigger timer expiry on server
-        fetch("/alien/api/game", {
+        fetch("/api/game", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "timer-expire", roomCode }),
@@ -158,7 +158,7 @@ export default function GamePage() {
   const callAPI = useCallback(
     async (action: string, extraData = {}) => {
       try {
-        const res = await fetch("/alien/api/game", {
+        const res = await fetch("/api/game", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -675,7 +675,7 @@ function ResultScene({
               : "You've been reduced to cosmic dust. Better luck next apocalypse."}
           </p>
           <button
-            onClick={() => (window.location.href = "/alien")}
+            onClick={() => (window.location.href = "/")}
             className="btn-neon btn-neon-pink"
           >
             Play Again
