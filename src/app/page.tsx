@@ -24,6 +24,13 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "create", playerName: playerName.trim() }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("Create game failed:", res.status, text);
+        setError(`Server error (${res.status}). Try again.`);
+        setLoading(false);
+        return;
+      }
       const data = await res.json();
       if (data.success) {
         localStorage.setItem("playerId", data.playerId);
@@ -33,7 +40,8 @@ export default function Home() {
       } else {
         setError(data.error || "Failed to create game");
       }
-    } catch {
+    } catch (err) {
+      console.error("Create game error:", err);
       setError("Connection failed. Try again.");
     }
     setLoading(false);
@@ -60,6 +68,13 @@ export default function Home() {
           roomCode: roomCode.trim().toUpperCase(),
         }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("Join game failed:", res.status, text);
+        setError(`Server error (${res.status}). Try again.`);
+        setLoading(false);
+        return;
+      }
       const data = await res.json();
       if (data.success) {
         localStorage.setItem("playerId", data.playerId);
@@ -69,7 +84,8 @@ export default function Home() {
       } else {
         setError(data.error || "Failed to join game");
       }
-    } catch {
+    } catch (err) {
+      console.error("Join game error:", err);
       setError("Connection failed. Try again.");
     }
     setLoading(false);

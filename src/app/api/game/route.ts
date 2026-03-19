@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { triggerGameEvent } from "@/lib/pusher-server";
+import { getGame, setGame } from "@/lib/game-store";
 import {
   generateNicknames,
   generateIntroduction,
@@ -20,9 +21,6 @@ import {
 } from "@/lib/types";
 
 const ROUND_DURATION = 60000; // 60 seconds
-
-// In-memory game store
-const games = new Map<string, GameState>();
 
 function addMessage(
   state: GameState,
@@ -91,6 +89,7 @@ async function setupNextQuestion(
     // Deliberation phase
     state.phase = "deliberation";
     addMessage(state, "system", "ZYRAX is making a decision...");
+    await setGame(roomCode, state);
     await triggerGameEvent(roomCode, "game-update", { gameState: state });
 
     try {
@@ -113,6 +112,7 @@ async function setupNextQuestion(
         "This has been... really something. I've made my choice."
       );
     }
+    await setGame(roomCode, state);
     await triggerGameEvent(roomCode, "game-update", { gameState: state });
     return;
   }
@@ -172,6 +172,7 @@ async function setupNextQuestion(
     state.roundDeadline = Date.now() + ROUND_DURATION;
   }
 
+  await setGame(roomCode, state);
   await triggerGameEvent(roomCode, "game-update", { gameState: state });
 }
 
@@ -187,6 +188,7 @@ async function processRound(
   // Show processing state briefly
   state.phase = "processing";
   state.roundDeadline = null;
+  await setGame(roomCode, state);
   await triggerGameEvent(roomCode, "game-update", { gameState: state });
 
   // Generate group reaction
@@ -254,7 +256,7 @@ export async function POST(request: NextRequest) {
 
         state.players.push(player);
         state.scores[playerId] = 50;
-        games.set(roomCode, state);
+        await setGame(roomCode, state);
 
         return NextResponse.json({
           success: true,
@@ -266,7 +268,7 @@ export async function POST(request: NextRequest) {
 
       case "join": {
         const { roomCode, playerName } = body;
-        const state = games.get(roomCode.toUpperCase());
+        const state = await getGame(roomCode.toUpperCase());
 
         if (!state) {
           return NextResponse.json({
@@ -301,6 +303,7 @@ export async function POST(request: NextRequest) {
 
         state.players.push(player);
         state.scores[playerId] = 50;
+        await setGame(roomCode.toUpperCase(), state);
 
         await triggerGameEvent(roomCode, "player-joined", {
           gameState: state,
@@ -316,7 +319,7 @@ export async function POST(request: NextRequest) {
 
       case "get-state": {
         const { roomCode } = body;
-        const state = games.get(roomCode?.toUpperCase());
+        const state = await getGame(roomCode?.toUpperCase());
         if (!state) {
           return NextResponse.json({
             success: false,
@@ -328,7 +331,7 @@ export async function POST(request: NextRequest) {
 
       case "start": {
         const { roomCode } = body;
-        const state = games.get(roomCode);
+        const state = await getGame(roomCode);
         if (!state) {
           return NextResponse.json({
             success: false,
@@ -346,6 +349,7 @@ export async function POST(request: NextRequest) {
         // Phase: Arrival (clients see animation while we generate)
         state.phase = "arrival";
         state.gameStartedAt = Date.now();
+        await setGame(roomCode, state);
         await triggerGameEvent(roomCode, "game-update", {
           gameState: state,
         });
@@ -406,7 +410,7 @@ export async function POST(request: NextRequest) {
 
       case "submit-answer": {
         const { roomCode, playerId, answer } = body;
-        const state = games.get(roomCode);
+        const state = await getGame(roomCode);
         if (!state || !state.currentRound) {
           return NextResponse.json({
             success: false,
@@ -421,6 +425,9 @@ export async function POST(request: NextRequest) {
 
         state.currentRound.answers[playerId] = answer;
         const player = state.players.find((p) => p.id === playerId);
+
+        // Save answer immediately
+        await setGame(roomCode, state);
 
         // Broadcast live answer to all clients
         await triggerGameEvent(roomCode, "answer-live", {
@@ -449,7 +456,7 @@ export async function POST(request: NextRequest) {
 
       case "timer-expire": {
         const { roomCode } = body;
-        const state = games.get(roomCode);
+        const state = await getGame(roomCode);
 
         // Only process if still in questioning phase (prevents duplicate processing)
         if (!state || state.phase !== "questioning" || !state.currentRound) {

@@ -28,6 +28,7 @@ export default function GamePage() {
   const [shipDeparting, setShipDeparting] = useState(false);
   const [beamActive, setBeamActive] = useState(false);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
+  const [startError, setStartError] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<Channel | null>(null);
   const timerExpiredRef = useRef(false);
@@ -156,23 +157,38 @@ export default function GamePage() {
 
   const callAPI = useCallback(
     async (action: string, extraData = {}) => {
-      const res = await fetch("/alien/api/game", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          roomCode,
-          playerId,
-          ...extraData,
-        }),
-      });
-      return res.json();
+      try {
+        const res = await fetch("/alien/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action,
+            roomCode,
+            playerId,
+            ...extraData,
+          }),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          console.error(`API action "${action}" failed:`, res.status, text);
+          return { success: false, error: `Server error (${res.status})` };
+        }
+        return res.json();
+      } catch (err) {
+        console.error(`API action "${action}" error:`, err);
+        return { success: false, error: "Connection failed" };
+      }
     },
     [roomCode, playerId]
   );
 
   const handleStartGame = async () => {
-    await callAPI("start");
+    setStartError("");
+    const data = await callAPI("start");
+    if (data && !data.success) {
+      console.error("Start game failed:", data.error);
+      setStartError(data.error || "Failed to start game. Try again.");
+    }
   };
 
   const handleSubmitAnswer = async () => {
@@ -307,15 +323,22 @@ export default function GamePage() {
             </div>
 
             {isHost && (
-              <button
-                onClick={handleStartGame}
-                disabled={gameState.players.length < 2}
-                className="btn-neon py-4 px-8 mt-4"
-              >
-                {gameState.players.length < 2
-                  ? "Waiting for crew..."
-                  : "Begin Extraction"}
-              </button>
+              <div className="flex flex-col items-center gap-2">
+                <button
+                  onClick={handleStartGame}
+                  disabled={gameState.players.length < 2}
+                  className="btn-neon py-4 px-8 mt-4"
+                >
+                  {gameState.players.length < 2
+                    ? "Waiting for crew..."
+                    : "Begin Extraction"}
+                </button>
+                {startError && (
+                  <p className="text-red-400 text-sm text-center font-mono">
+                    {startError}
+                  </p>
+                )}
+              </div>
             )}
 
             {!isHost && (
