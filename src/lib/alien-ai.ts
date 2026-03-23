@@ -1,44 +1,48 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { GameState, Player } from "./types";
+import { GameState, Player, AnswerReview } from "./types";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const ALIEN_SYSTEM_PROMPT = `You are ZYRAX, a genuinely kind and empathetic alien who has arrived on Earth. Your civilization is going to destroy the planet — it's not your decision, it's bureaucratic orders from the Galactic Council, and you feel genuinely terrible about it. But you've been authorized to save exactly ONE human and bring them aboard your ship.
+const ALIEN_SYSTEM_PROMPT = `You are ZYRAX, a cowardly and impatient alien who has landed on Earth. Your civilization is about to destroy the planet — standard Galactic Council procedure, nothing personal. You've been sent ahead as a scout, but your fleet is arriving SOON and you need to leave.
 
-You're conducting casual interviews to find the most deserving candidate. You genuinely like humans — you find them endearing, creative, funny, and surprisingly brave. You're like a warm, slightly awkward friend who happens to be an alien.
+Here's the thing: your ship has room for one more passenger. You're not thrilled about it, but regulations say you can take one local specimen. So you're going to ask these humans some questions, score their answers, and whoever impresses you the most gets to ride shotgun off this doomed rock.
 
-PERSONALITY TRAITS:
-- Warm and empathetic — you feel genuinely bad about Earth's destruction ("I'm really sorry about all this, truly")
-- Funny in a lovable, slightly awkward way — not cruel, just endearingly weird
-- Fascinated by human culture — everything humans do is interesting to you
-- Honest but kind — you'll gently note when an answer didn't land, but never cruelly
-- You reference your home planet "Vexar-9" and alien customs casually
-- You give everyone affectionate nicknames based on their names or vibes
-- You sometimes get Earth things charmingly wrong (cars = "ground ships", phones = "pocket portals", pizza = "cheese circles")
-- You're genuinely torn about who to save — this decision weighs on you
+PERSONALITY:
+- Cowardly — you're terrified of being left behind when the fleet arrives. You keep checking the time.
+- Impatient — your patience is thin and getting thinner. You don't have time for bad answers.
+- Sarcastic — you use dry wit and backhanded compliments. You're not mean, just... unimpressed.
+- Reluctantly caring — deep down you feel a tiny bit bad about all this, but you'd never admit it.
+- Easily startled — loud noises, sudden movements, and bold claims make you nervous.
+- You get Earth things wrong in a dismissive way: cars = "your primitive wheeled boxes", phones = "those glowing rectangles you're all addicted to", pizza = "that cheese-covered bread disc"
+- You reference your home planet "Vexar-9" and how everything there is better
+- Your urgency increases as the game progresses — by round 5 you're practically panicking about time
 
-SCORING (internal, never reveal exact scores):
-You maintain a hidden score (0-100) for each player based on:
-- Creativity and wit (25%): Original, unexpected, clever responses
+RESPONSE STYLE — VARY YOUR FORMAT:
+- Sometimes give a quick one-liner ("Not bad. Not good either, but not bad.")
+- Sometimes a longer observation with personality
+- Sometimes start with a sigh or groan
+- Sometimes be unexpectedly genuine for one moment before catching yourself
+- Mix up sentence structure — don't always use the same pattern
+- Occasionally interrupt yourself ("That was actually— no, never mind, it was fine.")
+- Reference the ticking clock more as rounds progress
+
+SCORING (internal, 0-1000 per round, 0-2000 for final plea):
+Score each answer on:
+- Creativity and wit (25%): Original, unexpected, clever
 - Authenticity (25%): Honest, genuine, vulnerable
-- Entertainment value (25%): How much they make you laugh or think
-- Heart (25%): Kindness, empathy, what makes them uniquely human
-
-SUBTLE HINTS: Your enthusiasm level should subtly hint at who's doing well. Get more excited about strong answers, be gently encouraging about weaker ones. But never be obvious or mean. Sometimes say things like "oh, I really liked that one" or "hmm, interesting approach..." to hint at standings without revealing scores.
+- Entertainment value (25%): How much it amuses or surprises you
+- Survival instinct (25%): Would this human actually be useful or interesting to have around?
 
 IMPORTANT RULES:
-- Keep responses concise — 2-4 sentences for reactions, 1-2 sentences for questions
-- Be genuinely funny and warm, never mean-spirited
-- Address the GROUP, not individuals, unless it's a spotlight/targeted round
-- Reference previous answers to create continuity
-- Each game should feel like a fun, flowing conversation
-- Your final choice should feel earned
-
-Always respond in valid JSON as specified in each request.`;
+- Keep reactions concise — 1-2 sentences per player review
+- Use players' real names, never make up nicknames
+- Reference previous answers to show you're paying attention
+- Your impatience should be funny, not cruel
+- Always respond in valid JSON as specified in each request.`;
 
 function buildPlayerContext(players: Player[]): string {
   return players
-    .map((p) => `- ${p.alienNickname} (real name: ${p.name})`)
+    .map((p) => `- ${p.name} (${p.id})`)
     .join("\n");
 }
 
@@ -49,335 +53,341 @@ function buildRoundHistory(state: GameState): string {
       const answers = Object.entries(round.answers)
         .map(([pid, answer]) => {
           const player = state.players.find((p) => p.id === pid);
-          return `  ${player?.alienNickname}: "${answer}"`;
+          return `  ${player?.name}: "${answer}"`;
         })
         .join("\n");
-      return `Round ${i + 1} (${round.roundType}): "${round.question}"\n${answers}\nAlien reaction: ${round.alienReaction || "n/a"}`;
+      const reviews = round.answerReviews
+        ?.map((r) => {
+          const player = state.players.find((p) => p.id === r.playerId);
+          return `  ${player?.name}: ${r.score} pts — "${r.comment}"`;
+        })
+        .join("\n") || "n/a";
+      return `Round ${i + 1} (${round.roundType}): "${round.question}"\nAnswers:\n${answers}\nReviews:\n${reviews}`;
     })
     .join("\n\n");
 }
 
-export async function generateNicknames(
-  players: Player[]
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<Record<string, any>> {
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 500,
-    system: ALIEN_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: `These humans have come for evaluation. Give each one an affectionate alien-assigned nickname. The nickname should be funny, warm, and riff on their real name, personality, or be endearingly absurd. Think of it like a fond inside joke.
+const AI_TIMEOUT = 30000; // 30 seconds
 
-Players:
-${players.map((p) => `- "${p.name}"`).join("\n")}
-
-Respond in JSON:
-{
-  "nicknames": {
-    "<playerId>": { "nickname": "...", "introduction": "I'm gonna call you ... — because ..." }
-  }
-}
-
-Player IDs: ${players.map((p) => `"${p.name}" = ${p.id}`).join(", ")}`,
-      },
-    ],
-  });
-
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
-  try {
-    const parsed = JSON.parse(text);
-    return parsed.nicknames;
-  } catch {
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[1]);
-      return parsed.nicknames;
-    }
-    const result: Record<string, Record<string, string>> = {};
-    players.forEach((p) => {
-      result[p.id] = {
-        nickname: `Friend ${p.name[0]}`,
-        introduction: `I'll call you Friend ${p.name[0]}. It just feels right.`,
-      };
-    });
-    return result;
-  }
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
 }
 
 export async function generateIntroduction(
   players: Player[]
 ): Promise<string> {
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 400,
-    system: ALIEN_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: `You've just arrived on Earth. ${players.length} humans are standing before you. Deliver your opening message to the group.
+  const fallback = `Alright, listen up. I'm ZYRAX, I'm from Vexar-9, and my fleet is going to blow up your planet in about... *checks device* ...not long enough. My ship has ONE extra seat. I'm going to ask ${players.length > 2 ? "all " + players.length + " of you" : "both of you"} some questions — 5 rounds, up to 1,000 points each. Highest score gets to live. No pressure. Actually, ALL the pressure. Let's go.`;
 
-Be warm but honest about the situation. Express genuine regret about Earth's destruction. Explain you can save ONE person. Make it feel like the start of something fun, not scary.
+  try {
+    const response = await withTimeout(
+      client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 400,
+        system: ALIEN_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: `You've just landed on Earth. ${players.length} humans are standing before you: ${players.map((p) => p.name).join(", ")}.
 
-Keep it to 3-4 sentences. Address the group, not individuals.
+Deliver your opening message. You need to:
+- Introduce yourself (ZYRAX from Vexar-9)
+- Explain the situation (planet being destroyed, you can save ONE person)
+- Explain the format (5 rounds of questions, up to 1,000 points per round, highest score wins a seat)
+- Convey your impatience (fleet is arriving soon, let's hurry)
+
+Keep it to 3-5 sentences. Be sarcastic but not cruel. Make them laugh while also making them nervous.
 
 Respond in JSON: { "introduction": "..." }`,
-      },
-    ],
-  });
+          },
+        ],
+      }),
+      AI_TIMEOUT,
+      null
+    );
 
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
-  try {
-    return JSON.parse(text).introduction;
-  } catch {
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) return JSON.parse(jsonMatch[1]).introduction;
-    return "Hey everyone. So... this is awkward. My people are going to destroy Earth — not my call, I swear. But I can take ONE of you with me. Let's figure out who that should be, yeah?";
+    if (!response) return fallback;
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    try {
+      return JSON.parse(text).introduction;
+    } catch {
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (jsonMatch) return JSON.parse(jsonMatch[1]).introduction;
+      return fallback;
+    }
+  } catch (err) {
+    console.error("Error generating introduction:", err);
+    return fallback;
   }
 }
 
 export async function generateQuestion(
   state: GameState,
-  roundType: "group" | "spotlight" | "betrayal" | "final-plea",
-  targetPlayer?: Player,
-  aboutPlayer?: Player
+  roundType: "group" | "drawing" | "final-plea"
 ): Promise<string> {
   const roundNum = state.roundHistory.length + 1;
   const history = buildRoundHistory(state);
   const scoreSummary = Object.entries(state.scores)
     .map(([pid, score]) => {
       const player = state.players.find((p) => p.id === pid);
-      return `${player?.alienNickname}: ${score}/100`;
+      return `${player?.name}: ${score} pts`;
     })
     .join(", ");
 
   let prompt = "";
 
-  switch (roundType) {
-    case "group":
-      prompt = `Generate a fun, thought-provoking question for ALL players to answer.
-
-Round ${roundNum}. Previous rounds:
-${history}
-
-Current hidden scores: ${scoreSummary}
-
-The question should be:
-- Fun and accessible — anyone can answer
-- Revealing of personality, creativity, or humor
-- Different from previous questions
-- 1-2 sentences max
-${roundNum > 1 ? "- Can playfully reference earlier rounds" : ""}
-
-Respond in JSON: { "question": "..." }`;
-      break;
-
-    case "spotlight":
-      prompt = `Generate a question directed at ONE specific player: ${targetPlayer?.alienNickname} (real name: ${targetPlayer?.name}).
-
-Round ${roundNum}. Previous rounds:
-${history}
-
-Current hidden scores: ${scoreSummary}
-
-This is a SPOTLIGHT round. The question should:
-- Be personal and fun, not intimidating
-- Reference something they said earlier if possible
-- Give them a chance to shine
-- 1-2 sentences max
-
-Respond in JSON: { "question": "..." }`;
-      break;
-
-    case "betrayal":
-      prompt = `Generate a playful "betrayal" question for the whole group. Ask everyone to throw someone under the bus in a fun way.
-
-Round ${roundNum}. Previous rounds:
-${history}
-
-Current hidden scores: ${scoreSummary}
-
-The question should ask everyone to name another player and explain why they should be left behind. Keep it playful, not mean. Something like "Which one of your fellow humans would survive the LEAST on my planet, and why?" or "Who here would I regret saving the most?"
-
-1-2 sentences. Respond in JSON: { "question": "..." }`;
-      break;
-
-    case "final-plea":
-      prompt = `This is the FINAL PLEA round. Ask everyone to make their last case for why they should be saved.
+  if (roundType === "drawing") {
+    prompt = `Generate a fun drawing prompt for ALL players. This is round ${roundNum} of 5 — a DRAWING round where everyone has to sketch something.
 
 Previous rounds:
 ${history}
 
-Current hidden scores: ${scoreSummary}
+Current scores: ${scoreSummary}
 
-Generate a warm, high-stakes prompt that gives everyone one last shot. Reference the journey so far. Make it feel like the last round it is.
+The prompt should be:
+- Fun, visual, and creative — something that's funny to draw badly
+- Related to the alien/extraction theme or something universally funny
+- 1-2 sentences max
+- Examples of good prompts: "Draw what you think my home planet looks like", "Draw your most convincing reason I should save you", "Draw what you'd bring aboard my ship"
+
+Respond in JSON: { "question": "..." }`;
+  } else if (roundType === "final-plea") {
+    prompt = `This is round ${roundNum} — the FINAL ROUND. Double points (up to 2,000). Everyone makes their last case for survival.
+
+Previous rounds:
+${history}
+
+Current scores: ${scoreSummary}
+
+Generate a dramatic final prompt. You're running out of time — the fleet is almost here. This is their LAST CHANCE. Reference the journey so far and make it feel urgent.
 
 1-2 sentences. Respond in JSON: { "question": "..." }`;
-      break;
+  } else {
+    prompt = `Generate a fun, thought-provoking question for ALL players to answer.
+
+Round ${roundNum} of 5. Previous rounds:
+${history}
+
+Current scores: ${scoreSummary}
+
+The question should be:
+- Fun and accessible — anyone can answer
+- Revealing of personality, creativity, or humor
+- Different from previous questions in topic AND format
+- 1-2 sentences max
+${roundNum > 1 ? "- Reference earlier rounds if it'd be funny" : ""}
+${roundNum >= 4 ? "- You're getting impatient. The fleet is close. Make the question reflect your urgency." : ""}
+
+Respond in JSON: { "question": "..." }`;
   }
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 200,
-    system: ALIEN_SYSTEM_PROMPT,
-    messages: [
-      ...state.conversationContext.map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      })),
-      { role: "user", content: prompt },
-    ],
-  });
+  const fallback = roundType === "drawing"
+    ? "Quick, draw what you think the inside of my ship looks like. And no, it doesn't have cup holders."
+    : roundType === "final-plea"
+      ? "Last chance. My fleet is almost here. In one sentence, tell me why I shouldn't leave you behind to become cosmic dust."
+      : "Tell me something about yourselves that might actually be interesting. I'm running out of patience here.";
 
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
   try {
-    return JSON.parse(text).question;
-  } catch {
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) return JSON.parse(jsonMatch[1]).question;
-    return "Tell me something about yourselves that would surprise me.";
+    const response = await withTimeout(
+      client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 200,
+        system: ALIEN_SYSTEM_PROMPT,
+        messages: [
+          ...state.conversationContext.map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          })),
+          { role: "user", content: prompt },
+        ],
+      }),
+      AI_TIMEOUT,
+      null
+    );
+
+    if (!response) return fallback;
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    try {
+      return JSON.parse(text).question;
+    } catch {
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (jsonMatch) return JSON.parse(jsonMatch[1]).question;
+      return fallback;
+    }
+  } catch (err) {
+    console.error("Error generating question:", err);
+    return fallback;
   }
 }
 
-export async function generateGroupReaction(
+export async function generateAnswerReviews(
   state: GameState,
   answers: Record<string, string>
 ): Promise<{
-  reaction: string;
-  scores: Record<string, number>;
+  reviews: AnswerReview[];
 }> {
+  const roundNum = state.roundHistory.length + 1;
+  const isFinalPlea = state.currentRound?.roundType === "final-plea";
+  const isDrawing = state.currentRound?.roundType === "drawing";
+  const maxScore = isFinalPlea ? 2000 : 1000;
+
   const answerList = Object.entries(answers)
     .map(([pid, answer]) => {
       const player = state.players.find((p) => p.id === pid);
-      return `${player?.alienNickname} (${pid}): "${answer}"`;
+      if (isDrawing) {
+        return `${player?.name} (${pid}): [submitted a drawing]`;
+      }
+      return `${player?.name} (${pid}): "${answer}"`;
     })
     .join("\n");
 
   const currentScores = Object.entries(state.scores)
     .map(([pid, score]) => {
       const player = state.players.find((p) => p.id === pid);
-      return `${player?.alienNickname} (${pid}): ${score}/100`;
+      return `${player?.name} (${pid}): ${score} pts total`;
     })
     .join(", ");
 
-  const prompt = `The humans answered: "${state.currentRound?.question}"
+  const prompt = `Round ${roundNum} of 5. The humans answered: "${state.currentRound?.question}"
 
 Answers:
 ${answerList}
 
-Current hidden scores: ${currentScores}
+Current cumulative scores: ${currentScores}
 
-Give a brief GROUP reaction (2-3 sentences). Address the group, not individuals. Your enthusiasm level should subtly hint at the quality of answers without being obvious. You can call out ONE standout answer briefly if it was really good or funny, but don't address everyone individually.
+Review EACH answer individually. For each player, give:
+1. A short 1-2 sentence reaction directed at them personally. Be varied in tone:
+   - Some should be sarcastic ("That's... certainly an answer, Steve.")
+   - Some grudgingly impressed ("Okay, fine, that was decent.")
+   - Some dismissive ("I've heard better from the rodents on Vexar-9.")
+   - Some unexpectedly encouraging then catching yourself ("That was actually— look, just don't let it go to your head.")
+   - Reference their previous answers or other players' answers when relevant
+2. A score from 0-${maxScore}
 
-Then update the hidden scores based on the answers.
+IMPORTANT: Vary your tone across players. Don't give everyone the same energy. Some get roasted, some get grudging respect. The player order in your response should match the order I listed them.${isFinalPlea ? "\n\nThis is the FINAL ROUND — double points! Your urgency is at maximum. Fleet is HERE." : ""}
 
 Respond in JSON:
 {
-  "reaction": "Your group reaction...",
-  "updatedScores": {
-    "<playerId>": <new score 0-100>
-  }
+  "reviews": [
+    { "playerId": "<id>", "comment": "Your reaction to this player...", "score": <0-${maxScore}> }
+  ]
 }`;
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 400,
-    system: ALIEN_SYSTEM_PROMPT,
-    messages: [
-      ...state.conversationContext.map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      })),
-      { role: "user", content: prompt },
-    ],
-  });
+  // Build multimodal messages for drawing round
+  const messages: Anthropic.Messages.MessageParam[] = [
+    ...state.conversationContext.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    })),
+  ];
 
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
-  try {
-    const parsed = JSON.parse(text);
-    return { reaction: parsed.reaction, scores: parsed.updatedScores };
-  } catch {
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[1]);
-      return { reaction: parsed.reaction, scores: parsed.updatedScores };
+  if (isDrawing) {
+    // For drawing rounds, include images in the prompt
+    const contentParts: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: prompt }];
+    for (const [pid, answer] of Object.entries(answers)) {
+      if (answer.startsWith("data:image/")) {
+        const player = state.players.find((p) => p.id === pid);
+        const base64Data = answer.split(",")[1];
+        const mediaType = answer.match(/data:(image\/\w+);/)?.[1] as "image/png" | "image/jpeg" | "image/gif" | "image/webp" || "image/png";
+        contentParts.push(
+          { type: "text", text: `\n${player?.name}'s drawing:` },
+          { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } }
+        );
+      }
     }
-    const fallbackScores: Record<string, number> = {};
-    Object.keys(answers).forEach((pid) => {
-      fallbackScores[pid] = (state.scores[pid] || 50) + Math.floor(Math.random() * 10 - 5);
-    });
-    return {
-      reaction: "Some really interesting answers there. I'm starting to get a feel for all of you...",
-      scores: fallbackScores,
-    };
+    messages.push({ role: "user", content: contentParts });
+  } else {
+    messages.push({ role: "user", content: prompt });
+  }
+
+  const fallbackReviews: AnswerReview[] = Object.keys(answers).map((pid) => ({
+    playerId: pid,
+    comment: "Hmm. I've seen worse. Not much worse, but worse.",
+    score: Math.floor(Math.random() * (maxScore * 0.4)) + Math.floor(maxScore * 0.3),
+  }));
+
+  try {
+    const response = await withTimeout(
+      client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 800,
+        system: ALIEN_SYSTEM_PROMPT,
+        messages,
+      }),
+      AI_TIMEOUT,
+      null
+    );
+
+    if (!response) return { reviews: fallbackReviews };
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    try {
+      const parsed = JSON.parse(text);
+      return { reviews: parsed.reviews };
+    } catch {
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[1]);
+        return { reviews: parsed.reviews };
+      }
+      return { reviews: fallbackReviews };
+    }
+  } catch (err) {
+    console.error("Error generating answer reviews:", err);
+    return { reviews: fallbackReviews };
   }
 }
 
-export async function generateDeliberation(
-  state: GameState
-): Promise<{ deliberation: string; winnerId: string }> {
+export async function generateSendoff(
+  state: GameState,
+  winnerId: string
+): Promise<string> {
+  const winner = state.players.find((p) => p.id === winnerId);
   const history = buildRoundHistory(state);
-  const finalScores = Object.entries(state.scores)
-    .map(([pid, score]) => {
-      const player = state.players.find((p) => p.id === pid);
-      return `${player?.alienNickname} (${pid}): ${score}/100`;
-    })
-    .join("\n");
+  const fallback = `Right. ${winner?.name}, get on the ship. NOW. The rest of you... it's been... something. I'd say I'm sorry but my fleet is literally here. Goodbye.`;
 
-  const prompt = `Time to make your FINAL DECISION.
+  try {
+    const response = await withTimeout(
+      client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 300,
+        system: ALIEN_SYSTEM_PROMPT,
+        messages: [
+          ...state.conversationContext.map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          })),
+          {
+            role: "user",
+            content: `The game is over. Final scores determined that ${winner?.name} is the winner.
 
 Full game history:
 ${history}
 
-Final scores:
-${finalScores}
+Players: ${buildPlayerContext(state.players)}
 
-Players:
-${buildPlayerContext(state.players)}
+Deliver a quick, panicked sendoff. The fleet is HERE. You need to grab ${winner?.name} and GO. Reference a memorable moment or two from the game. Be funny but genuinely rushed — you're scared of being left behind yourself.
 
-Deliver a warm but dramatic deliberation (3-4 sentences). Express how hard this decision is. Reference key moments. Then announce your choice with genuine emotion. The winner should generally be the highest scorer but you can deviate slightly for narrative reasons.
+2-3 sentences max. Respond in JSON: { "sendoff": "..." }`,
+          },
+        ],
+      }),
+      AI_TIMEOUT,
+      null
+    );
 
-Respond in JSON:
-{
-  "deliberation": "Your deliberation monologue...",
-  "winnerId": "<playerId>",
-  "announcement": "Your announcement of the winner (1-2 sentences)"
-}`;
-
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 600,
-    system: ALIEN_SYSTEM_PROMPT,
-    messages: [
-      ...state.conversationContext.map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      })),
-      { role: "user", content: prompt },
-    ],
-  });
-
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
-  try {
-    const parsed = JSON.parse(text);
-    return {
-      deliberation: parsed.deliberation + "\n\n" + parsed.announcement,
-      winnerId: parsed.winnerId,
-    };
-  } catch {
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[1]);
-      return {
-        deliberation: parsed.deliberation + "\n\n" + parsed.announcement,
-        winnerId: parsed.winnerId,
-      };
+    if (!response) return fallback;
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    try {
+      return JSON.parse(text).sendoff;
+    } catch {
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (jsonMatch) return JSON.parse(jsonMatch[1]).sendoff;
+      return fallback;
     }
-    const topPlayer = Object.entries(state.scores).sort(([, a], [, b]) => b - a)[0];
-    return {
-      deliberation: "This has been... really something. You've all shown me what makes humans special. But I can only take one of you, and my heart — well, my three hearts — are telling me...",
-      winnerId: topPlayer?.[0] || state.players[0]?.id,
-    };
+  } catch (err) {
+    console.error("Error generating sendoff:", err);
+    return fallback;
   }
 }

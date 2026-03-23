@@ -1,7 +1,6 @@
 export interface Player {
   id: string;
   name: string;
-  alienNickname: string;
   avatar: AvatarType;
   isHost: boolean;
   connected: boolean;
@@ -34,27 +33,35 @@ export const AVATAR_CONFIG: Record<
 export type GamePhase =
   | "lobby"
   | "arrival"
+  | "intro"
   | "questioning"
   | "processing"
-  | "deliberation"
+  | "reviewing"
+  | "results"
+  | "final-results"
   | "result";
+
+export interface AnswerReview {
+  playerId: string;
+  comment: string;
+  score: number;
+}
 
 export interface GameMessage {
   id: string;
   sender: "alien" | "system" | string;
   text: string;
   timestamp: number;
-  targetPlayer?: string;
 }
 
 export interface RoundState {
   roundNumber: number;
-  roundType: "group" | "spotlight" | "betrayal" | "final-plea";
+  roundType: "group" | "drawing" | "final-plea";
   question: string;
-  targetPlayerId?: string;
-  aboutPlayerId?: string;
   answers: Record<string, string>;
   alienReaction: string;
+  answerReviews: AnswerReview[];
+  roundScores: Record<string, number>;
 }
 
 export interface GameState {
@@ -69,7 +76,7 @@ export interface GameState {
   winnerId: string | null;
   gameStartedAt: number | null;
   roundDeadline: number | null;
-  currentSpotlightIndex: number;
+  readyPlayers: string[];
 }
 
 export interface PusherGameEvent {
@@ -84,6 +91,7 @@ export type GameAction =
   | { action: "start"; roomCode: string; playerId: string }
   | { action: "submit-answer"; roomCode: string; playerId: string; answer: string }
   | { action: "timer-expire"; roomCode: string }
+  | { action: "ready"; roomCode: string; playerId: string }
   | { action: "get-state"; roomCode: string };
 
 export interface GameResponse {
@@ -129,6 +137,6 @@ export function createInitialGameState(roomCode: string): GameState {
     winnerId: null,
     gameStartedAt: null,
     roundDeadline: null,
-    currentSpotlightIndex: 0,
+    readyPlayers: [],
   };
 }

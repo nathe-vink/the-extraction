@@ -2,18 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { triggerGameEvent } from "@/lib/pusher-server";
 import { getGame, setGame } from "@/lib/game-store";
 import {
-  generateNicknames,
   generateIntroduction,
   generateQuestion,
-  generateGroupReaction,
-  generateDeliberation,
+  generateAnswerReviews,
+  generateSendoff,
 } from "@/lib/alien-ai";
 import {
-  GamePhase,
   GameState,
   Player,
   GameMessage,
-  RoundState,
   createInitialGameState,
   generateRoomCode,
   generatePlayerId,
@@ -21,61 +18,28 @@ import {
 } from "@/lib/types";
 
 const ROUND_DURATION = 60000; // 60 seconds
+const TOTAL_ROUNDS = 5;
 
 function addMessage(
   state: GameState,
   sender: string,
-  text: string,
-  targetPlayer?: string
+  text: string
 ): GameMessage {
   const msg: GameMessage = {
     id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     sender,
     text,
     timestamp: Date.now(),
-    targetPlayer,
   };
   state.messages.push(msg);
   return msg;
 }
 
-// Determine next round info
-function getNextRound(
-  state: GameState
-):
-  | "deliberation"
-  | {
-      roundType: "group" | "spotlight" | "betrayal" | "final-plea";
-      targetPlayer?: Player;
-    } {
-  const groupRounds = state.roundHistory.filter(
-    (r) => r.roundType === "group"
-  ).length;
-  const spotlightRounds = state.roundHistory.filter(
-    (r) => r.roundType === "spotlight"
-  ).length;
-  const betrayalRounds = state.roundHistory.filter(
-    (r) => r.roundType === "betrayal"
-  ).length;
-  const pleaRounds = state.roundHistory.filter(
-    (r) => r.roundType === "final-plea"
-  ).length;
-
-  if (groupRounds < 2) {
-    return { roundType: "group" };
-  }
-  if (spotlightRounds < state.players.length) {
-    const target =
-      state.players[state.currentSpotlightIndex % state.players.length];
-    return { roundType: "spotlight", targetPlayer: target };
-  }
-  if (betrayalRounds < 1) {
-    return { roundType: "betrayal" };
-  }
-  if (pleaRounds < 1) {
-    return { roundType: "final-plea" };
-  }
-  return "deliberation";
+// Determine round type for a given round number (1-indexed)
+function getRoundType(roundNumber: number): "group" | "drawing" | "final-plea" {
+  if (roundNumber === 3) return "drawing";
+  if (roundNumber === 5) return "final-plea";
+  return "group";
 }
 
 // Set up a new question round
@@ -83,94 +47,49 @@ async function setupNextQuestion(
   state: GameState,
   roomCode: string
 ): Promise<void> {
-  const next = getNextRound(state);
+  const nextRoundNum = state.roundHistory.length + 1;
 
-  if (next === "deliberation") {
-    // Deliberation phase
-    state.phase = "deliberation";
-    addMessage(state, "system", "ZYRAX is making a decision...");
-    await setGame(roomCode, state);
-    await triggerGameEvent(roomCode, "game-update", { gameState: state });
+  if (nextRoundNum > TOTAL_ROUNDS) {
+    // All rounds complete — determine winner and go to final results
+    const topPlayer = Object.entries(state.scores).sort(
+      ([, a], [, b]) => b - a
+    )[0];
+    state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+    state.phase = "final-results";
+    state.roundDeadline = null;
 
-    try {
-      const { deliberation, winnerId } = await generateDeliberation(state);
-      state.phase = "result";
-      state.winnerId = winnerId;
-      state.roundDeadline = null;
-      addMessage(state, "alien", deliberation);
-    } catch (err) {
-      console.error("Error generating deliberation:", err);
-      const topPlayer = Object.entries(state.scores).sort(
-        ([, a], [, b]) => b - a
-      )[0];
-      state.phase = "result";
-      state.winnerId = topPlayer?.[0] || state.players[0]?.id;
-      state.roundDeadline = null;
-      addMessage(
-        state,
-        "alien",
-        "This has been... really something. I've made my choice."
-      );
-    }
+    const sendoff = await generateSendoff(state, state.winnerId);
+    addMessage(state, "alien", sendoff);
+
     await setGame(roomCode, state);
     await triggerGameEvent(roomCode, "game-update", { gameState: state });
     return;
   }
 
-  // Generate next question
-  const { roundType, targetPlayer } = next;
+  const roundType = getRoundType(nextRoundNum);
 
-  try {
-    const question = await generateQuestion(
-      state,
-      roundType,
-      targetPlayer
-    );
+  const question = await generateQuestion(state, roundType);
 
-    state.currentRound = {
-      roundNumber: state.roundHistory.length + 1,
-      roundType,
-      question,
-      targetPlayerId: targetPlayer?.id,
-      answers: {},
-      alienReaction: "",
-    };
+  state.currentRound = {
+    roundNumber: nextRoundNum,
+    roundType,
+    question,
+    answers: {},
+    alienReaction: "",
+    answerReviews: [],
+    roundScores: {},
+  };
 
-    if (roundType === "spotlight" && targetPlayer) {
-      addMessage(
-        state,
-        "alien",
-        `${targetPlayer.alienNickname}, this one's for you: ${question}`,
-        targetPlayer.id
-      );
-    } else {
-      addMessage(state, "alien", question);
-    }
+  addMessage(state, "alien", question);
 
-    state.conversationContext.push({
-      role: "assistant",
-      content: `Asked ${roundType} question: "${question}"${targetPlayer ? ` to ${targetPlayer.alienNickname}` : ""}`,
-    });
+  state.conversationContext.push({
+    role: "assistant",
+    content: `Asked round ${nextRoundNum} ${roundType} question: "${question}"`,
+  });
 
-    state.phase = "questioning";
-    state.roundDeadline = Date.now() + ROUND_DURATION;
-  } catch (err) {
-    console.error("Error generating question:", err);
-    state.currentRound = {
-      roundNumber: state.roundHistory.length + 1,
-      roundType: "group",
-      question: "Tell me something about yourselves that would surprise me.",
-      answers: {},
-      alienReaction: "",
-    };
-    addMessage(
-      state,
-      "alien",
-      "Tell me something about yourselves that would surprise me."
-    );
-    state.phase = "questioning";
-    state.roundDeadline = Date.now() + ROUND_DURATION;
-  }
+  state.phase = "questioning";
+  state.roundDeadline = Date.now() + ROUND_DURATION;
+  state.readyPlayers = [];
 
   await setGame(roomCode, state);
   await triggerGameEvent(roomCode, "game-update", { gameState: state });
@@ -185,26 +104,30 @@ async function processRound(
 
   const round = state.currentRound;
 
-  // Show processing state briefly
+  // Show processing state
   state.phase = "processing";
   state.roundDeadline = null;
   await setGame(roomCode, state);
   await triggerGameEvent(roomCode, "game-update", { gameState: state });
 
-  // Generate group reaction
-  try {
-    const { reaction, scores } = await generateGroupReaction(
-      state,
-      round.answers
-    );
-    round.alienReaction = reaction;
-    state.scores = { ...state.scores, ...scores };
-    addMessage(state, "alien", reaction);
-  } catch (err) {
-    console.error("Error generating reaction:", err);
-    round.alienReaction = "Interesting answers, everyone...";
-    addMessage(state, "alien", round.alienReaction);
+  // Generate per-player reviews
+  const { reviews } = await generateAnswerReviews(state, round.answers);
+  round.answerReviews = reviews;
+
+  // Calculate round scores from reviews and update cumulative scores
+  for (const review of reviews) {
+    round.roundScores[review.playerId] = review.score;
+    state.scores[review.playerId] = (state.scores[review.playerId] || 0) + review.score;
   }
+
+  // Build a combined reaction for conversation context
+  const reactionSummary = reviews
+    .map((r) => {
+      const p = state.players.find((pl) => pl.id === r.playerId);
+      return `${p?.name}: ${r.score} pts — "${r.comment}"`;
+    })
+    .join("; ");
+  round.alienReaction = reactionSummary;
 
   // Update conversation context
   state.conversationContext.push({
@@ -212,25 +135,19 @@ async function processRound(
     content: `Answers to "${round.question}": ${Object.entries(round.answers)
       .map(([pid, ans]) => {
         const p = state.players.find((pl) => pl.id === pid);
-        return `${p?.alienNickname}: "${ans}"`;
+        return `${p?.name}: "${round.roundType === "drawing" ? "[drawing]" : ans}"`;
       })
       .join(", ")}`,
   });
   state.conversationContext.push({
     role: "assistant",
-    content: round.alienReaction,
+    content: `Reviews: ${reactionSummary}`,
   });
 
-  // Archive round
-  state.roundHistory.push({ ...round });
-
-  // Advance spotlight index
-  if (round.roundType === "spotlight") {
-    state.currentSpotlightIndex++;
-  }
-
-  // Set up next question (or deliberation)
-  await setupNextQuestion(state, roomCode);
+  // Move to reviewing phase — client will cycle through reviews
+  state.phase = "reviewing";
+  await setGame(roomCode, state);
+  await triggerGameEvent(roomCode, "game-update", { gameState: state });
 }
 
 export async function POST(request: NextRequest) {
@@ -248,14 +165,13 @@ export async function POST(request: NextRequest) {
         const player: Player = {
           id: playerId,
           name: playerName,
-          alienNickname: "",
           avatar: getAvailableAvatar([]),
           isHost: true,
           connected: true,
         };
 
         state.players.push(player);
-        state.scores[playerId] = 50;
+        state.scores[playerId] = 0;
         await setGame(roomCode, state);
 
         return NextResponse.json({
@@ -295,14 +211,13 @@ export async function POST(request: NextRequest) {
         const player: Player = {
           id: playerId,
           name: playerName,
-          alienNickname: "",
           avatar: getAvailableAvatar(state.players),
           isHost: false,
           connected: true,
         };
 
         state.players.push(player);
-        state.scores[playerId] = 50;
+        state.scores[playerId] = 0;
         await setGame(roomCode.toUpperCase(), state);
 
         await triggerGameEvent(roomCode, "player-joined", {
@@ -346,7 +261,7 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // Phase: Arrival (clients see animation while we generate)
+        // Phase: Arrival animation
         state.phase = "arrival";
         state.gameStartedAt = Date.now();
         await setGame(roomCode, state);
@@ -354,56 +269,68 @@ export async function POST(request: NextRequest) {
           gameState: state,
         });
 
-        // Generate nicknames + intro inline
-        try {
-          const nicknames = await generateNicknames(state.players);
+        // Generate introduction
+        const introduction = await generateIntroduction(state.players);
+        addMessage(state, "alien", introduction);
 
-          for (const player of state.players) {
-            const nicknameData = nicknames[player.id];
-            if (nicknameData && typeof nicknameData === "object") {
-              player.alienNickname =
-                (nicknameData as Record<string, string>).nickname ||
-                `Friend ${player.name[0]}`;
-            } else if (typeof nicknameData === "string") {
-              player.alienNickname = nicknameData;
-            } else {
-              player.alienNickname = `Friend ${player.name[0]}`;
-            }
-          }
+        state.conversationContext.push({
+          role: "assistant",
+          content: `Introduction: ${introduction}. Players: ${state.players.map((p) => p.name).join(", ")}`,
+        });
 
-          const introduction = await generateIntroduction(state.players);
-          addMessage(state, "alien", introduction);
+        // Move to intro phase — players must ready up
+        state.phase = "intro";
+        state.readyPlayers = [];
+        await setGame(roomCode, state);
+        await triggerGameEvent(roomCode, "game-update", {
+          gameState: state,
+        });
 
-          // Single group nickname announcement
-          const nicknameList = state.players
-            .map((p) => {
-              const nd = nicknames[p.id];
-              if (nd && typeof nd === "object") {
-                return (nd as Record<string, string>).introduction || `${p.name} — I'll call you ${p.alienNickname}.`;
-              }
-              return `${p.name} — I'll call you ${p.alienNickname}.`;
-            })
-            .join(" ");
-          addMessage(state, "alien", nicknameList);
+        return NextResponse.json({ success: true, gameState: state });
+      }
 
-          state.conversationContext.push({
-            role: "assistant",
-            content: `Introduction: ${introduction}. Nicknames: ${state.players.map((p) => `${p.name} -> ${p.alienNickname}`).join(", ")}`,
-          });
-        } catch (err) {
-          console.error("Error generating intro:", err);
-          addMessage(
-            state,
-            "alien",
-            "Hey everyone. So... my people are going to destroy Earth. Not my call, I'm really sorry. But I can save ONE of you. Let's figure out who, yeah?"
-          );
-          state.players.forEach((p) => {
-            p.alienNickname = `Friend ${p.name[0].toUpperCase()}`;
+      case "ready": {
+        const { roomCode, playerId } = body;
+        const state = await getGame(roomCode);
+        if (!state) {
+          return NextResponse.json({
+            success: false,
+            error: "Room not found",
           });
         }
 
-        // Immediately set up first question
-        await setupNextQuestion(state, roomCode);
+        // Only allow ready in intro or results phases
+        if (state.phase !== "intro" && state.phase !== "results") {
+          return NextResponse.json({ success: true, gameState: state });
+        }
+
+        // Add player to ready list (dedup)
+        if (!state.readyPlayers.includes(playerId)) {
+          state.readyPlayers.push(playerId);
+        }
+
+        await setGame(roomCode, state);
+
+        // Broadcast ready count
+        await triggerGameEvent(roomCode, "player-ready", {
+          gameState: state,
+          readyCount: state.readyPlayers.length,
+          totalPlayers: state.players.length,
+        });
+
+        // Check if all players are ready
+        if (state.readyPlayers.length >= state.players.length) {
+          state.readyPlayers = [];
+
+          if (state.phase === "intro" || state.phase === "results") {
+            // Archive current round if coming from results
+            if (state.phase === "results" && state.currentRound) {
+              state.roundHistory.push({ ...state.currentRound });
+            }
+            // Start next question
+            await setupNextQuestion(state, roomCode);
+          }
+        }
 
         return NextResponse.json({ success: true, gameState: state });
       }
@@ -418,7 +345,6 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // Ignore if already in processing/deliberation
         if (state.phase !== "questioning") {
           return NextResponse.json({ success: true, gameState: state });
         }
@@ -426,28 +352,19 @@ export async function POST(request: NextRequest) {
         state.currentRound.answers[playerId] = answer;
         const player = state.players.find((p) => p.id === playerId);
 
-        // Save answer immediately
         await setGame(roomCode, state);
 
-        // Broadcast live answer to all clients
+        // Broadcast live answer
         await triggerGameEvent(roomCode, "answer-live", {
           playerId,
-          playerNickname: player?.alienNickname || player?.name || "Someone",
-          answer,
+          playerName: player?.name || "Someone",
+          answer: state.currentRound.roundType === "drawing" ? "[drawing]" : answer,
           answerCount: Object.keys(state.currentRound.answers).length,
-          expectedAnswers:
-            state.currentRound.roundType === "spotlight"
-              ? 1
-              : state.players.length,
+          expectedAnswers: state.players.length,
         });
 
-        // Check if all expected answers are in
-        const isIndividual = state.currentRound.roundType === "spotlight";
-        const expectedAnswers = isIndividual ? 1 : state.players.length;
-        const answerCount = Object.keys(state.currentRound.answers).length;
-
-        if (answerCount >= expectedAnswers) {
-          // All answers in — process the round
+        // Check if all answers are in
+        if (Object.keys(state.currentRound.answers).length >= state.players.length) {
           await processRound(state, roomCode);
         }
 
@@ -458,7 +375,6 @@ export async function POST(request: NextRequest) {
         const { roomCode } = body;
         const state = await getGame(roomCode);
 
-        // Only process if still in questioning phase (prevents duplicate processing)
         if (!state || state.phase !== "questioning" || !state.currentRound) {
           return NextResponse.json({
             success: true,
@@ -468,6 +384,23 @@ export async function POST(request: NextRequest) {
 
         // Process with whatever answers we have
         await processRound(state, roomCode);
+
+        return NextResponse.json({ success: true, gameState: state });
+      }
+
+      // Client signals that reviewing phase is done (all reviews shown)
+      case "reviewing-done": {
+        const { roomCode } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "reviewing") {
+          return NextResponse.json({ success: true, gameState: state });
+        }
+
+        // Move to results phase — show leaderboard, players ready up
+        state.phase = "results";
+        state.readyPlayers = [];
+        await setGame(roomCode, state);
+        await triggerGameEvent(roomCode, "game-update", { gameState: state });
 
         return NextResponse.json({ success: true, gameState: state });
       }
