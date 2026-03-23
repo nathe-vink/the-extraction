@@ -33,21 +33,21 @@ class SoundEngine {
     return this.ctx!;
   }
 
-  // Short bleep for typewriter characters
+  // Word-level bleep for typewriter — called per word, not per char
   playTypewriterTick() {
     if (this._muted) return;
     const ctx = this.ensureContext();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
-    osc.type = "square";
-    osc.frequency.value = 800 + Math.random() * 400;
-    gain.gain.value = 0.03;
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
+    osc.type = "triangle";
+    osc.frequency.value = 600 + Math.random() * 300;
+    gain.gain.value = 0.02;
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
 
     osc.connect(gain).connect(ctx.destination);
     osc.start();
-    osc.stop(ctx.currentTime + 0.05);
+    osc.stop(ctx.currentTime + 0.08);
   }
 
   // Countdown tick — once per second

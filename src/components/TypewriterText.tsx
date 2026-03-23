@@ -18,126 +18,173 @@ const ALIEN_GLYPHS: Record<string, string> = {
   Z: "\u0E0C",
 };
 
-function toAlienText(text: string): string {
-  return text
-    .split("")
-    .map((ch) => ALIEN_GLYPHS[ch] || ch)
-    .join("");
+function toAlienChar(ch: string): string {
+  return ALIEN_GLYPHS[ch] || ch;
 }
+
+// Sentence-ending punctuation that triggers a pause
+const SENTENCE_END = /[.!?]/;
+const DECODE_LAG = 8; // Characters behind the typing cursor before decoding starts
 
 interface TypewriterTextProps {
   text: string;
-  speed?: number;         // ms per character
-  decodeDelay?: number;   // ms before decode starts after typing completes
-  decodeDuration?: number; // ms for the full decode animation
+  speed?: number;         // ms per character (base speed)
   onComplete?: () => void;
-  onTick?: () => void;    // called per character for sound hooks
+  onWordSound?: () => void; // called per word for sound
   className?: string;
-  skipAlienFont?: boolean;
+  skipAnimation?: boolean;  // show full text immediately
 }
 
 export function TypewriterText({
   text,
   speed = 25,
-  decodeDelay = 300,
-  decodeDuration = 600,
   onComplete,
-  onTick,
+  onWordSound,
   className = "",
-  skipAlienFont = false,
+  skipAnimation = false,
 }: TypewriterTextProps) {
-  const [displayedCount, setDisplayedCount] = useState(0);
-  const [decodeProgress, setDecodeProgress] = useState(0); // 0 = alien, 1 = english
-  const [isTypingDone, setIsTypingDone] = useState(false);
-  const [isFullyDone, setIsFullyDone] = useState(false);
+  const [typedCount, setTypedCount] = useState(0);
+  const [decodedCount, setDecodedCount] = useState(0);
+  const [isDone, setIsDone] = useState(false);
   const completedRef = useRef(false);
+  const pauseUntilRef = useRef(0);
+  const charsSinceSound = useRef(0);
 
-  // Typing effect
+  // Skip animation mode
   useEffect(() => {
-    if (isFullyDone) return;
-    if (displayedCount >= text.length) {
-      setIsTypingDone(true);
+    if (skipAnimation && !completedRef.current) {
+      setTypedCount(text.length);
+      setDecodedCount(text.length);
+      setIsDone(true);
+      completedRef.current = true;
+      onComplete?.();
+    }
+  }, [skipAnimation, text.length, onComplete]);
+
+  // Typing effect — advances typedCount
+  useEffect(() => {
+    if (isDone || skipAnimation) return;
+    if (typedCount >= text.length) {
+      // Typing done, but wait for decode to catch up
       return;
+    }
+
+    const now = Date.now();
+    if (now < pauseUntilRef.current) {
+      // We're in a sentence pause
+      const remaining = pauseUntilRef.current - now;
+      const timer = setTimeout(() => {
+        setTypedCount((c) => c + 1);
+      }, remaining);
+      return () => clearTimeout(timer);
     }
 
     const timer = setTimeout(() => {
-      setDisplayedCount((c) => c + 1);
-      onTick?.();
+      const newCount = typedCount + 1;
+      const char = text[typedCount];
+
+      // Sound: play every 3-4 characters (roughly per word)
+      charsSinceSound.current++;
+      if (charsSinceSound.current >= 3 && char === " ") {
+        charsSinceSound.current = 0;
+        onWordSound?.();
+      }
+
+      // Check for sentence pause
+      if (SENTENCE_END.test(char) && newCount < text.length) {
+        // Next char should be a space or end — this is a real sentence break
+        const nextChar = text[newCount];
+        if (nextChar === " " || nextChar === "\n" || newCount >= text.length) {
+          pauseUntilRef.current = Date.now() + 400; // 400ms pause
+        }
+      }
+
+      setTypedCount(newCount);
     }, speed);
 
     return () => clearTimeout(timer);
-  }, [displayedCount, text.length, speed, onTick, isFullyDone]);
+  }, [typedCount, text, speed, isDone, skipAnimation, onWordSound]);
 
-  // Decode animation after typing completes
+  // Decode effect — trails behind typedCount by DECODE_LAG chars
   useEffect(() => {
-    if (!isTypingDone || skipAlienFont || isFullyDone) {
-      if (isTypingDone && skipAlienFont && !completedRef.current) {
+    if (isDone || skipAnimation) return;
+
+    const targetDecode = Math.max(0, typedCount - DECODE_LAG);
+    if (decodedCount >= targetDecode && decodedCount < text.length) {
+      // Wait for more typing
+      return;
+    }
+    if (decodedCount >= text.length) {
+      // Fully decoded
+      if (typedCount >= text.length && !completedRef.current) {
         completedRef.current = true;
-        setDecodeProgress(1);
-        setIsFullyDone(true);
+        setIsDone(true);
         onComplete?.();
       }
       return;
     }
 
-    const startTime = Date.now() + decodeDelay;
-    const interval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      if (elapsed < 0) return;
-      const progress = Math.min(1, elapsed / decodeDuration);
-      setDecodeProgress(progress);
+    // Decode at the same rate as typing
+    const timer = setTimeout(() => {
+      setDecodedCount((c) => Math.min(c + 1, text.length));
+    }, speed);
 
-      if (progress >= 1) {
-        clearInterval(interval);
-        if (!completedRef.current) {
-          completedRef.current = true;
-          setIsFullyDone(true);
-          onComplete?.();
-        }
+    return () => clearTimeout(timer);
+  }, [decodedCount, typedCount, text.length, speed, isDone, skipAnimation, onComplete]);
+
+  // Once typing is done, fast-decode remaining chars
+  useEffect(() => {
+    if (typedCount < text.length || isDone || skipAnimation) return;
+    if (decodedCount >= text.length) {
+      if (!completedRef.current) {
+        completedRef.current = true;
+        setIsDone(true);
+        onComplete?.();
       }
-    }, 30);
+      return;
+    }
 
-    return () => clearInterval(interval);
-  }, [isTypingDone, skipAlienFont, decodeDelay, decodeDuration, onComplete, isFullyDone]);
+    // Fast decode remaining
+    const timer = setTimeout(() => {
+      setDecodedCount((c) => Math.min(c + 1, text.length));
+    }, 15); // faster than normal speed
+
+    return () => clearTimeout(timer);
+  }, [typedCount, decodedCount, text.length, isDone, skipAnimation, onComplete]);
 
   // Skip on click
   const handleClick = useCallback(() => {
-    if (!isFullyDone) {
-      setDisplayedCount(text.length);
-      setIsTypingDone(true);
-      setDecodeProgress(1);
+    if (!isDone) {
+      setTypedCount(text.length);
+      setDecodedCount(text.length);
       if (!completedRef.current) {
         completedRef.current = true;
-        setIsFullyDone(true);
+        setIsDone(true);
         onComplete?.();
       }
     }
-  }, [isFullyDone, text.length, onComplete]);
+  }, [isDone, text.length, onComplete]);
 
-  // Build displayed text with partial decode
-  const visibleText = text.slice(0, displayedCount);
-  let renderedText: string;
-
-  if (skipAlienFont || decodeProgress >= 1) {
-    renderedText = visibleText;
-  } else if (decodeProgress <= 0) {
-    renderedText = toAlienText(visibleText);
-  } else {
-    // Partially decoded — decode from left to right
-    const decodedChars = Math.floor(visibleText.length * decodeProgress);
-    const decoded = visibleText.slice(0, decodedChars);
-    const alien = toAlienText(visibleText.slice(decodedChars));
-    renderedText = decoded + alien;
+  // Build displayed text:
+  // [0..decodedCount) = English
+  // [decodedCount..typedCount) = alien glyphs
+  // [typedCount..end) = not shown
+  let rendered = "";
+  for (let i = 0; i < typedCount; i++) {
+    if (i < decodedCount) {
+      rendered += text[i];
+    } else {
+      rendered += toAlienChar(text[i]);
+    }
   }
 
   return (
     <span
       onClick={handleClick}
-      className={`cursor-pointer ${className}`}
-      style={{ userSelect: "none" }}
+      className={`cursor-pointer select-none ${className}`}
     >
-      {renderedText}
-      {!isFullyDone && <span className="animate-pulse opacity-60">|</span>}
+      {rendered}
+      {!isDone && <span className="animate-pulse opacity-60">|</span>}
     </span>
   );
 }
