@@ -61,13 +61,17 @@ function sanitizeForBroadcast(state: GameState): GameState {
   return sanitized;
 }
 
-// Safe broadcast helper
-async function broadcast(roomCode: string, event: string, state: GameState) {
-  try {
-    const sanitized = sanitizeForBroadcast(state);
-    await triggerGameEvent(roomCode, event, { gameState: sanitized });
-  } catch (err) {
-    console.error(`Pusher broadcast failed for ${event}:`, err);
+// Safe broadcast helper with retry
+async function broadcast(roomCode: string, event: string, state: GameState, retries = 2) {
+  const sanitized = sanitizeForBroadcast(state);
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      await triggerGameEvent(roomCode, event, { gameState: sanitized });
+      return;
+    } catch (err) {
+      console.error(`Pusher broadcast attempt ${attempt + 1} failed for ${event}:`, err);
+      if (attempt < retries) await new Promise(r => setTimeout(r, 500));
+    }
   }
 }
 

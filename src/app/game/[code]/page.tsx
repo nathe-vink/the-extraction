@@ -8,6 +8,7 @@ import { PixelAvatar } from "@/components/PixelAvatar";
 import { TypewriterText } from "@/components/TypewriterText";
 import { DrawingCanvas } from "@/components/DrawingCanvas";
 import { soundEngine } from "@/lib/sound-engine";
+import { ResultScene as NewResultScene } from "@/components/ResultScene";
 import type { Channel } from "pusher-js";
 
 const PROCESSING_PHRASES = [
@@ -32,10 +33,8 @@ export default function GamePage() {
   const [submittedAnswer, setSubmittedAnswer] = useState(false);
   const [answerCount, setAnswerCount] = useState(0);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const [burnPhase, setBurnPhase] = useState(0);
+  const [animPhase, setAnimPhase] = useState(0);
   const [shipVisible, setShipVisible] = useState(false);
-  const [shipDeparting, setShipDeparting] = useState(false);
-  const [beamActive, setBeamActive] = useState(false);
   const [startError, setStartError] = useState("");
   const [isReady, setIsReady] = useState(false);
   const [readyCount, setReadyCount] = useState(0);
@@ -48,6 +47,7 @@ export default function GamePage() {
   const [introTypingDone, setIntroTypingDone] = useState(false);
   const [questionTypingDone, setQuestionTypingDone] = useState(false);
   const [drawings, setDrawings] = useState<Record<string, string>>({});
+  const [drawingsLoaded, setDrawingsLoaded] = useState(true);
 
   const channelRef = useRef<Channel | null>(null);
   const timerExpiredRef = useRef(false);
@@ -85,6 +85,10 @@ export default function GamePage() {
         if (data.success && data.gameState) {
           setGameState(data.gameState);
           setReadyCount(data.gameState.readyPlayers?.length || 0);
+          // Sync ready state if player already marked ready on server
+          if (data.gameState.readyPlayers?.includes(pid)) {
+            setIsReady(true);
+          }
           // Extract intro text from messages
           const msgs = data.gameState.messages || [];
           const lastAlien = [...msgs].reverse().find((m: { sender: string }) => m.sender === "alien");
@@ -113,17 +117,21 @@ export default function GamePage() {
         reviewingDoneRef.current = false;
         // Fetch drawings if this is a drawing round
         if (gs.currentRound?.roundType === "drawing") {
+          setDrawingsLoaded(false);
           fetch("/api/game", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "get-drawings", roomCode }),
           })
             .then((r) => r.json())
-            .then((d) => { if (d.success) setDrawings(d.drawings || {}); });
+            .then((d) => { if (d.success) setDrawings(d.drawings || {}); })
+            .finally(() => setDrawingsLoaded(true));
+        } else {
+          setDrawingsLoaded(true);
         }
       }
       if (gs.phase === "results" || gs.phase === "intro" || gs.phase === "question-prompt") {
-        setIsReady(false);
+        setIsReady(gs.readyPlayers?.includes(playerId) || false);
         setQuestionTypingDone(false);
       }
       // Extract latest alien text for display
@@ -183,7 +191,8 @@ export default function GamePage() {
 
     if (text) {
       setPhaseTransition(text);
-      setTimeout(() => setPhaseTransition(null), 2500);
+      const duration = phase === "reviewing" ? 600 : 2500;
+      setTimeout(() => setPhaseTransition(null), duration);
     }
   }, [gameState?.phase, gameState?.currentRound?.roundNumber]);
 
@@ -200,8 +209,10 @@ export default function GamePage() {
 
       if (remaining > 0 && remaining <= 10) {
         soundEngine.playCountdownUrgent();
-      } else if (remaining > 0 && remaining <= 30 && remaining % 5 === 0) {
-        soundEngine.playCountdownTick();
+        soundEngine.setMelodyTempo(200);
+      } else if (remaining > 0 && remaining <= 30) {
+        soundEngine.setMelodyTempo(160);
+        if (remaining % 5 === 0) soundEngine.playCountdownTick();
       }
 
       if (remaining <= 0 && !timerExpiredRef.current) {
@@ -233,23 +244,43 @@ export default function GamePage() {
     if (gameState?.phase === "arrival") setShipVisible(true);
   }, [gameState?.phase]);
 
-  // Processing phrase cycling
+  // Processing phrase cycling + polling fallback
   useEffect(() => {
     if (gameState?.phase !== "processing") return;
     let i = 0;
-    const interval = setInterval(() => {
+    const phraseInterval = setInterval(() => {
       i = (i + 1) % PROCESSING_PHRASES.length;
       setProcessingPhrase(PROCESSING_PHRASES[i]);
     }, 1500);
-    return () => clearInterval(interval);
-  }, [gameState?.phase]);
+
+    // Poll every 4s as fallback in case Pusher broadcast fails
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get-state", roomCode }),
+        });
+        const data = await res.json();
+        if (data.success && data.gameState && data.gameState.phase !== "processing") {
+          setGameState(data.gameState);
+          setReadyCount(data.gameState.readyPlayers?.length || 0);
+          const msgs = data.gameState.messages || [];
+          const lastAlien = [...msgs].reverse().find((m: { sender: string }) => m.sender === "alien");
+          if (lastAlien) setIntroText(lastAlien.text);
+        }
+      } catch { /* ignore polling errors */ }
+    }, 4000);
+
+    return () => { clearInterval(phraseInterval); clearInterval(pollInterval); };
+  }, [gameState?.phase, roomCode]);
 
   // Review cycling
   useEffect(() => {
-    if (gameState?.phase !== "reviewing" || !gameState.currentRound?.answerReviews?.length) return;
+    if (gameState?.phase !== "reviewing" || !gameState.currentRound?.answerReviews?.length || !drawingsLoaded) return;
     const startTimer = setTimeout(() => setCurrentReviewIndex(0), 800);
     return () => clearTimeout(startTimer);
-  }, [gameState?.phase, gameState?.currentRound?.answerReviews?.length]);
+  }, [gameState?.phase, gameState?.currentRound?.answerReviews?.length, drawingsLoaded]);
 
   // Auto-advance reviews
   useEffect(() => {
@@ -280,15 +311,22 @@ export default function GamePage() {
     return () => clearTimeout(timer);
   }, [currentReviewIndex, gameState?.phase, gameState?.currentRound, roomCode]);
 
-  // Result/departure phase
+  // Result/departure phase — 9 animation phases
   useEffect(() => {
     if (gameState?.phase === "result" && gameState.winnerId) {
-      const timer1 = setTimeout(() => setBeamActive(true), 3000);
-      const timer2 = setTimeout(() => { setShipDeparting(true); setBeamActive(false); soundEngine.playShipDepart(); }, 6000);
-      const timer3 = setTimeout(() => { setBurnPhase(1); soundEngine.playBurn(); }, 7000);
-      const timer4 = setTimeout(() => setBurnPhase(2), 9000);
-      const timer5 = setTimeout(() => setBurnPhase(3), 11000);
-      return () => { clearTimeout(timer1); clearTimeout(timer2); clearTimeout(timer3); clearTimeout(timer4); clearTimeout(timer5); };
+      setAnimPhase(0);
+      const timers = [
+        setTimeout(() => { setAnimPhase(0); soundEngine.playRampExtend(); }, 0),       // ramp extends
+        setTimeout(() => setAnimPhase(1), 1500),                                        // winner walks up
+        setTimeout(() => setAnimPhase(2), 3500),                                        // ramp retracts
+        setTimeout(() => { setAnimPhase(3); soundEngine.playChargeUp(); }, 4500),       // ship charges
+        setTimeout(() => { setAnimPhase(4); soundEngine.playShipDepart(); }, 6500),     // ship departs
+        setTimeout(() => { setAnimPhase(5); soundEngine.playEngineBlast(); }, 7500),    // engine blast
+        setTimeout(() => { setAnimPhase(6); soundEngine.playBurn(); }, 8500),           // skeletons
+        setTimeout(() => setAnimPhase(7), 10500),                                       // ash collapse
+        setTimeout(() => setAnimPhase(8), 13000),                                       // game over
+      ];
+      return () => timers.forEach(clearTimeout);
     }
   }, [gameState?.phase, gameState?.winnerId]);
 
@@ -456,7 +494,7 @@ export default function GamePage() {
 
         {/* === INTRO — Alien intro, centered, no chat history === */}
         {phase === "intro" && (
-          <div className="flex-1 flex flex-col items-center justify-center p-6">
+          <div className="flex-1 flex flex-col items-center justify-start pt-12 sm:pt-16 p-6">
             <div className="text-4xl mb-6">&#x1F47D;</div>
             <div className="max-w-lg text-center mb-8">
               <p className="text-gray-200 text-sm leading-relaxed">
@@ -481,7 +519,7 @@ export default function GamePage() {
 
         {/* === QUESTION PROMPT — Show question, ready up, no timer yet === */}
         {phase === "question-prompt" && gameState.currentRound && (
-          <div className="flex-1 flex flex-col items-center justify-center p-6">
+          <div className="flex-1 flex flex-col items-center justify-start pt-12 sm:pt-16 p-6">
             <div className="text-center mb-2">
               <p className="font-pixel text-[10px] text-gray-500 mb-4">
                 ROUND {gameState.currentRound.roundNumber} OF 5
@@ -629,13 +667,11 @@ export default function GamePage() {
         {/* === RESULT — Ship departure + burn === */}
         {phase === "result" && gameState.winnerId && (
           <div className="flex-1 flex flex-col items-center justify-center p-4">
-            <ResultScene
+            <NewResultScene
               players={gameState.players}
               winnerId={gameState.winnerId}
               currentPlayerId={playerId}
-              burnPhase={burnPhase}
-              beamActive={beamActive}
-              shipDeparting={shipDeparting}
+              animPhase={animPhase}
             />
           </div>
         )}
@@ -679,11 +715,20 @@ function ReviewScreen({
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 animate-fade-in" key={review.playerId}>
-      {/* Progress dots */}
-      <div className="flex gap-2 mb-6">
-        {reviews.map((_, i) => (
-          <div key={i} className={`w-2 h-2 rounded-full transition-colors ${i <= currentReviewIndex ? "bg-neon-green" : "bg-white/20"}`} />
-        ))}
+      {/* Progress bar */}
+      <div className="w-full max-w-md mb-6">
+        <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-neon-green rounded-full"
+            style={{
+              width: "0%",
+              transition: "width 10s linear",
+              boxShadow: "0 0 8px var(--neon-green)",
+            }}
+            ref={(el) => { if (el) requestAnimationFrame(() => { el.style.width = "100%"; }); }}
+          />
+        </div>
+        <p className="font-pixel text-[8px] text-gray-500 mt-1 text-right">{currentReviewIndex + 1} / {reviews.length}</p>
       </div>
 
       {/* Player info */}
@@ -850,62 +895,3 @@ function FinalResults({
   );
 }
 
-function ResultScene({
-  players,
-  winnerId,
-  currentPlayerId,
-  burnPhase,
-  beamActive,
-  shipDeparting,
-}: {
-  players: Player[];
-  winnerId: string;
-  currentPlayerId: string;
-  burnPhase: number;
-  beamActive: boolean;
-  shipDeparting: boolean;
-}) {
-  const winner = players.find((p) => p.id === winnerId);
-  const losers = players.filter((p) => p.id !== winnerId);
-  const isWinner = winnerId === currentPlayerId;
-
-  return (
-    <div className="space-y-8 text-center">
-      <div className={`text-6xl ${shipDeparting ? "animate-ship-depart" : "animate-float"}`}>&#x1F6F8;</div>
-
-      {beamActive && <div className="beam h-32 animate-beam-down mx-auto rounded-b-full" />}
-
-      <div className="space-y-2">
-        <p className="font-pixel text-xs neon-text-green">THE CHOSEN ONE</p>
-        <div className={`inline-flex flex-col items-center gap-2 p-4 rounded-xl bg-neon-green/10 border border-neon-green/30 ${beamActive ? "animate-float" : ""}`}>
-          <PixelAvatar type={winner?.avatar || "hillbilly"} size={48} />
-          <p className="text-white font-bold">{winner?.name}</p>
-          {isWinner && <p className="neon-text-green font-pixel text-xs">THAT&apos;S YOU!</p>}
-        </div>
-      </div>
-
-      {burnPhase > 0 && (
-        <div className="space-y-2">
-          <p className="font-pixel text-xs text-red-400">LEFT BEHIND</p>
-          <div className="flex justify-center gap-4 flex-wrap">
-            {losers.map((p) => (
-              <div key={p.id} className={`flex flex-col items-center gap-1 p-3 rounded-lg transition-all duration-1000 ${burnPhase === 1 ? "burn-phase-1" : burnPhase === 2 ? "burn-phase-2" : "burn-phase-3"}`}>
-                {burnPhase <= 1 ? <PixelAvatar type={p.avatar} size={36} /> : <span className="text-3xl">{burnPhase === 2 ? "\uD83D\uDC80" : "\u2728"}</span>}
-                <p className="text-xs text-gray-400">{p.name}</p>
-                {p.id === currentPlayerId && burnPhase < 3 && <p className="text-red-400 font-pixel text-[8px]">YOU</p>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {burnPhase >= 3 && (
-        <div className="animate-fade-in space-y-4 mt-8">
-          <p className="font-pixel text-lg neon-text-pink">GAME OVER</p>
-          <p className="text-gray-400 text-sm">{isWinner ? "You've been extracted. Enjoy the stars." : "You've been reduced to cosmic dust. Better luck next apocalypse."}</p>
-          <button onClick={() => (window.location.href = "/")} className="btn-neon btn-neon-pink">Play Again</button>
-        </div>
-      )}
-    </div>
-  );
-}

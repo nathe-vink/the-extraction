@@ -24,7 +24,7 @@ function toAlienChar(ch: string): string {
 
 // Sentence-ending punctuation that triggers a pause
 const SENTENCE_END = /[.!?]/;
-const DECODE_LAG = 8; // Characters behind the typing cursor before decoding starts
+const DECODE_LAG = 18; // Characters behind the typing cursor before decoding starts
 
 interface TypewriterTextProps {
   text: string;

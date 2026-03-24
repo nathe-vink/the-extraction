@@ -37,6 +37,13 @@ const config: Config = {
         "typing-dot": "typingDot 1.4s ease-in-out infinite",
         "fade-in": "fadeIn 0.5s ease-out forwards",
         "slide-up": "slideUp 0.5s ease-out forwards",
+        "ramp-extend": "rampExtend 1s ease-out forwards",
+        "ramp-retract": "rampRetract 0.5s ease-in forwards",
+        "walk-up": "walkUpRamp 2s ease-in-out forwards",
+        "charge-pulse": "chargePulse 0.3s ease-in-out infinite",
+        "engine-blast": "engineBlast 0.8s ease-out forwards",
+        "skeleton-reveal": "skeletonReveal 0.5s ease-out forwards",
+        "ash-collapse": "ashCollapse 2s ease-in forwards",
       },
       keyframes: {
         pulseNeon: {
@@ -99,6 +106,36 @@ const config: Config = {
         slideUp: {
           "0%": { opacity: "0", transform: "translateY(20px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+        rampExtend: {
+          "0%": { height: "0px", opacity: "0" },
+          "100%": { height: "60px", opacity: "1" },
+        },
+        walkUpRamp: {
+          "0%": { transform: "translateX(0) translateY(0)" },
+          "100%": { transform: "translateX(20px) translateY(-60px)" },
+        },
+        rampRetract: {
+          "0%": { height: "60px", opacity: "1" },
+          "100%": { height: "0px", opacity: "0" },
+        },
+        chargePulse: {
+          "0%, 100%": { filter: "brightness(1) drop-shadow(0 0 5px #39ff14)" },
+          "50%": { filter: "brightness(2) drop-shadow(0 0 20px #39ff14) drop-shadow(0 0 40px #00f0ff)" },
+        },
+        engineBlast: {
+          "0%": { transform: "scaleY(0)", opacity: "0" },
+          "20%": { transform: "scaleY(1)", opacity: "1" },
+          "100%": { transform: "scaleY(3) scaleX(1.5)", opacity: "0" },
+        },
+        skeletonReveal: {
+          "0%": { filter: "brightness(3) saturate(3)", opacity: "1" },
+          "100%": { filter: "brightness(1) saturate(1)", opacity: "1" },
+        },
+        ashCollapse: {
+          "0%": { transform: "scale(1)", opacity: "1" },
+          "50%": { transform: "scale(0.6) translateY(10px)", opacity: "0.6" },
+          "100%": { transform: "scale(0.2) translateY(20px)", opacity: "0" },
         },
       },
     },
