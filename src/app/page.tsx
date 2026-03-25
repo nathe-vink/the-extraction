@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { PixelShip } from "@/components/PixelShip";
 
 export default function Home() {
   const router = useRouter();
@@ -95,7 +96,7 @@ export default function Home() {
     <main className="flex min-h-screen flex-col items-center justify-center p-4">
       {/* Title */}
       <div className="text-center mb-12 animate-fade-in">
-        <div className="text-6xl mb-4 animate-float">&#x1F6F8;</div>
+        <div className="mb-4 animate-float"><PixelShip size={120} animate showJetStream /></div>
         <h1 className="font-pixel text-2xl sm:text-4xl neon-text-green mb-4 tracking-wider">
           THE EXTRACTION
         </h1>

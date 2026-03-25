@@ -34,7 +34,6 @@ export type GamePhase =
   | "lobby"
   | "arrival"
   | "intro"
-  | "question-prompt"
   | "questioning"
   | "processing"
   | "reviewing"

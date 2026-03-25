@@ -5,6 +5,8 @@ import { useParams } from "next/navigation";
 import { getPusherClient } from "@/lib/pusher-client";
 import { GameState, Player, AVATAR_CONFIG, AnswerReview } from "@/lib/types";
 import { PixelAvatar } from "@/components/PixelAvatar";
+import { PixelAlien } from "@/components/PixelAlien";
+import { PixelShip } from "@/components/PixelShip";
 import { TypewriterText } from "@/components/TypewriterText";
 import { DrawingCanvas } from "@/components/DrawingCanvas";
 import { soundEngine } from "@/lib/sound-engine";
@@ -45,7 +47,6 @@ export default function GamePage() {
   const [soundInitialized, setSoundInitialized] = useState(false);
   const [introText, setIntroText] = useState("");
   const [introTypingDone, setIntroTypingDone] = useState(false);
-  const [questionTypingDone, setQuestionTypingDone] = useState(false);
   const [drawings, setDrawings] = useState<Record<string, string>>({});
   const [drawingsLoaded, setDrawingsLoaded] = useState(true);
 
@@ -115,24 +116,38 @@ export default function GamePage() {
       if (gs.phase === "reviewing") {
         setCurrentReviewIndex(-1);
         reviewingDoneRef.current = false;
-        // Fetch drawings if this is a drawing round
+        // Fetch drawings if this is a drawing round (with retry)
         if (gs.currentRound?.roundType === "drawing") {
           setDrawingsLoaded(false);
-          fetch("/api/game", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "get-drawings", roomCode }),
-          })
-            .then((r) => r.json())
-            .then((d) => { if (d.success) setDrawings(d.drawings || {}); })
-            .finally(() => setDrawingsLoaded(true));
+          const fetchDrawings = async (retries = 2) => {
+            for (let i = 0; i <= retries; i++) {
+              try {
+                const res = await fetch("/api/game", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "get-drawings", roomCode }),
+                });
+                const d = await res.json();
+                if (d.success && Object.keys(d.drawings || {}).length > 0) {
+                  setDrawings(d.drawings);
+                  return;
+                }
+                console.warn(`Drawing fetch attempt ${i + 1}: success=${d.success}, drawings=${Object.keys(d.drawings || {}).length}`);
+              } catch (err) {
+                console.error(`Drawing fetch attempt ${i + 1} failed:`, err);
+              }
+              if (i < retries) await new Promise(r => setTimeout(r, 1000));
+            }
+            // Final fallback — set empty drawings so review can still proceed
+            setDrawings({});
+          };
+          fetchDrawings().finally(() => setDrawingsLoaded(true));
         } else {
           setDrawingsLoaded(true);
         }
       }
-      if (gs.phase === "results" || gs.phase === "intro" || gs.phase === "question-prompt") {
+      if (gs.phase === "results" || gs.phase === "intro") {
         setIsReady(gs.readyPlayers?.includes(playerId) || false);
-        setQuestionTypingDone(false);
       }
       // Extract latest alien text for display
       const msgs = gs.messages || [];
@@ -174,7 +189,7 @@ export default function GamePage() {
     if (prevPhase === phase || !prevPhase) return;
 
     let text: string | null = null;
-    if (phase === "question-prompt" && gameState.currentRound) {
+    if (phase === "questioning" && gameState.currentRound) {
       const rn = gameState.currentRound.roundNumber;
       const type = gameState.currentRound.roundType;
       if (type === "drawing") text = `ROUND ${rn} — DRAW!`;
@@ -392,7 +407,7 @@ export default function GamePage() {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
-          <div className="text-4xl mb-4 animate-float">&#x1F6F8;</div>
+          <div className="mb-4 animate-float"><PixelShip size={80} animate /></div>
           <p className="neon-text-green font-pixel text-sm">Establishing contact...</p>
         </div>
       </div>
@@ -448,7 +463,7 @@ export default function GamePage() {
         {/* === LOBBY === */}
         {phase === "lobby" && (
           <div className="flex-1 flex flex-col items-center justify-center p-4 gap-6">
-            <div className="text-6xl animate-float">&#x1F6F8;</div>
+            <div className="animate-float"><PixelShip size={120} animate /></div>
             <div className="text-center">
               <p className="font-pixel text-xs text-gray-400 mb-2">ROOM CODE</p>
               <p className="room-code">{roomCode}</p>
@@ -458,7 +473,7 @@ export default function GamePage() {
               <p className="font-pixel text-xs neon-text-blue text-center">CREW ({gameState.players.length}/8)</p>
               {gameState.players.map((p, i) => (
                 <div key={p.id} className="flex items-center gap-3 p-3 rounded-lg bg-white/5 border border-white/5 animate-slide-up" style={{ animationDelay: `${i * 100}ms` }}>
-                  <PixelAvatar type={p.avatar} size={40} />
+                  <PixelAvatar type={p.avatar} size={40} animated />
                   <div className="flex-1">
                     <p className="text-white font-semibold">{p.name}</p>
                     <p className="text-gray-500 text-xs">{AVATAR_CONFIG[p.avatar]?.label}</p>
@@ -484,7 +499,7 @@ export default function GamePage() {
         {/* === ARRIVAL === */}
         {phase === "arrival" && (
           <div className="flex-1 flex flex-col items-center justify-center p-4">
-            <div className={`spaceship ${shipVisible ? "animate-ship-arrive" : "opacity-0"}`}>&#x1F6F8;</div>
+            <div className={`spaceship ${shipVisible ? "animate-ship-arrive" : "opacity-0"}`}><PixelShip size={120} animate showJetStream /></div>
             <div className="mt-8 text-center">
               <p className="font-pixel text-sm neon-text-green animate-pulse">INCOMING TRANSMISSION</p>
               <div className="typing-indicator justify-center mt-4"><span /><span /><span /></div>
@@ -495,7 +510,7 @@ export default function GamePage() {
         {/* === INTRO — Alien intro, centered, no chat history === */}
         {phase === "intro" && (
           <div className="flex-1 flex flex-col items-center justify-start pt-12 sm:pt-16 p-6">
-            <div className="text-4xl mb-6">&#x1F47D;</div>
+            <div className="mb-6"><PixelAlien size={64} animate /></div>
             <div className="max-w-lg text-center mb-8">
               <p className="text-gray-200 text-sm leading-relaxed">
                 <TypewriterText
@@ -507,38 +522,6 @@ export default function GamePage() {
               </p>
             </div>
             {introTypingDone && (
-              <div className="animate-fade-in text-center space-y-3">
-                <button onClick={handleReady} disabled={isReady} className={`btn-neon py-3 px-8 ${isReady ? "opacity-50" : ""}`}>
-                  {isReady ? "Ready \u2713" : "Ready"}
-                </button>
-                <p className="font-pixel text-xs neon-text-blue">{readyCount} of {gameState.players.length} ready</p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* === QUESTION PROMPT — Show question, ready up, no timer yet === */}
-        {phase === "question-prompt" && gameState.currentRound && (
-          <div className="flex-1 flex flex-col items-center justify-start pt-12 sm:pt-16 p-6">
-            <div className="text-center mb-2">
-              <p className="font-pixel text-[10px] text-gray-500 mb-4">
-                ROUND {gameState.currentRound.roundNumber} OF 5
-                {gameState.currentRound.roundType === "drawing" && " — DRAWING ROUND"}
-                {gameState.currentRound.roundType === "final-plea" && " — FINAL PLEA (2X POINTS)"}
-              </p>
-            </div>
-            <div className="text-4xl mb-6">&#x1F47D;</div>
-            <div className="max-w-lg text-center mb-8">
-              <p className="text-gray-200 text-base leading-relaxed">
-                <TypewriterText
-                  text={gameState.currentRound.question}
-                  speed={25}
-                  onWordSound={() => soundEngine.playTypewriterTick()}
-                  onComplete={() => setQuestionTypingDone(true)}
-                />
-              </p>
-            </div>
-            {questionTypingDone && (
               <div className="animate-fade-in text-center space-y-3">
                 <button onClick={handleReady} disabled={isReady} className={`btn-neon py-3 px-8 ${isReady ? "opacity-50" : ""}`}>
                   {isReady ? "Ready \u2713" : "Ready"}
@@ -614,7 +597,7 @@ export default function GamePage() {
         {/* === PROCESSING — Animated interstitial === */}
         {phase === "processing" && (
           <div className="flex-1 flex flex-col items-center justify-center p-4">
-            <div className="text-6xl mb-6 animate-float">&#x1F6F8;</div>
+            <div className="mb-6 animate-float"><PixelShip size={120} animate showJetStream /></div>
             <p className="font-pixel text-xs neon-text-green animate-pulse mb-4">{processingPhrase}</p>
             <div className="typing-indicator justify-center"><span /><span /><span /></div>
           </div>
@@ -733,21 +716,27 @@ function ReviewScreen({
 
       {/* Player info */}
       <div className="flex items-center gap-3 mb-4">
-        <PixelAvatar type={player?.avatar || "hillbilly"} size={48} />
+        <PixelAvatar type={player?.avatar || "hillbilly"} size={48} animated />
         <div>
           <p className="text-white font-semibold text-lg">{player?.name}{isYou ? " (you)" : ""}</p>
         </div>
       </div>
 
       {/* Their answer */}
-      {isDrawing && drawingData ? (
-        <div className="mb-6">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={drawingData} alt={`${player?.name}'s drawing`} className="rounded-lg border border-white/10 max-w-[220px]" style={{ imageRendering: "pixelated" }} />
-        </div>
+      {isDrawing ? (
+        drawingData ? (
+          <div className="mb-6">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={drawingData} alt={`${player?.name}'s drawing`} className="rounded-lg border border-white/10 max-w-[220px]" style={{ imageRendering: "pixelated" }} />
+          </div>
+        ) : (
+          <div className="mb-6 w-[220px] h-[220px] rounded-lg border border-white/10 flex items-center justify-center bg-white/5">
+            <p className="text-gray-500 text-xs font-pixel">Drawing unavailable</p>
+          </div>
+        )
       ) : (
         <div className="player-bubble p-4 mb-6 max-w-md">
-          <p className="text-gray-200 text-base">{answer === "[drawing]" ? "(drawing)" : answer || "(no answer)"}</p>
+          <p className="text-gray-200 text-base">{answer || "(no answer)"}</p>
         </div>
       )}
 
@@ -873,7 +862,7 @@ function FinalResults({
           <div key={player.id} className={`animate-slide-up rounded-xl p-4 ${isWinner ? "border-2 border-neon-green/60 bg-neon-green/10" : "border border-white/5 bg-white/5"}`} style={{ animationDelay: `${i * 300}ms` }}>
             <div className="flex items-center gap-3 mb-2">
               <span className="font-pixel text-lg text-gray-400 w-8">{i === 0 ? "\uD83D\uDC51" : `${i + 1}.`}</span>
-              <PixelAvatar type={player.avatar} size={40} />
+              <PixelAvatar type={player.avatar} size={40} animated />
               <div className="flex-1">
                 <p className={`font-semibold ${isWinner ? "neon-text-green" : "text-white"}`}>{player.name}{isYou ? " (you)" : ""}</p>
                 {isWinner && <p className="font-pixel text-[10px] neon-text-yellow">EXTRACTED</p>}

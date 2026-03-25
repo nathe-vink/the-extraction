@@ -163,13 +163,7 @@ body {
   position: relative;
 }
 
-.alien-bubble::before {
-  content: "\1F47D";
-  position: absolute;
-  left: -32px;
-  top: 4px;
-  font-size: 20px;
-}
+/* Alien icon is now rendered by PixelAlien component inline */
 
 /* Player message bubble */
 .player-bubble {

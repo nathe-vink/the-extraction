@@ -136,9 +136,9 @@ async function setupNextQuestion(
     content: `Asked round ${nextRoundNum} ${roundType} question: "${question}"`,
   });
 
-  // Show question prompt first — timer doesn't start yet
-  state.phase = "question-prompt";
-  state.roundDeadline = null;
+  // Go directly to questioning with timer
+  state.phase = "questioning";
+  state.roundDeadline = Date.now() + ROUND_DURATION;
   state.readyPlayers = [];
 
   await setGame(roomCode, state);
@@ -400,8 +400,8 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        // Only allow ready in intro, question-prompt, or results phases
-        if (state.phase !== "intro" && state.phase !== "results" && state.phase !== "question-prompt") {
+        // Only allow ready in intro or results phases
+        if (state.phase !== "intro" && state.phase !== "results") {
           return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
         }
 
@@ -419,20 +419,20 @@ export async function POST(request: NextRequest) {
         if (state.readyPlayers.length >= state.players.length) {
           state.readyPlayers = [];
 
-          if (state.phase === "question-prompt") {
-            // Everyone has read the question — start the timer
-            state.phase = "questioning";
-            state.roundDeadline = Date.now() + ROUND_DURATION;
+          if (state.phase === "intro") {
+            // Show processing state immediately, then generate question
+            state.phase = "processing";
             await setGame(roomCode, state);
             await broadcast(roomCode, "game-update", state);
-          } else if (state.phase === "intro") {
-            // Start first question
             await setupNextQuestion(state, roomCode);
           } else if (state.phase === "results") {
-            // Archive current round and move to next
+            // Archive current round and show processing immediately
             if (state.currentRound) {
               state.roundHistory.push({ ...state.currentRound });
             }
+            state.phase = "processing";
+            await setGame(roomCode, state);
+            await broadcast(roomCode, "game-update", state);
             await setupNextQuestion(state, roomCode);
           }
         }

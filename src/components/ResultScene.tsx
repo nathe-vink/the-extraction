@@ -2,44 +2,7 @@
 
 import { Player, AVATAR_CONFIG } from "@/lib/types";
 import { PixelAvatar } from "./PixelAvatar";
-
-// Pixel art UFO (32x16 grid)
-function PixelShip({ size = 128 }: { size?: number }) {
-  const grid = [
-    '..........GGGGGGGGGGGG..........',
-    '.......GGGGLLLLLLLLGGGG.........',
-    '.....GGGLLLLLLLLLLLLLLGGG.......',
-    '....GGLLLLLWWWWWWLLLLLLLGG.....',
-    '...GGLLLLWWWWWWWWWWLLLLLLGG....',
-    '..GGLLLWWCCWWWWCCWWWLLLLLGG...',
-    '.GGGLLWWWWWWWWWWWWWWWLLLLGGG..',
-    'GGGGGGGGGGGGGGGGGGGGGGGGGGGGGG.',
-    '.MMMMMMMMMMMMMMMMMMMMMMMMMMMM..',
-    '..MMMMMMMMMMMMMMMMMMMMMMMMMM...',
-    '...GGGGGGGGGGGGGGGGGGGGGGGG....',
-    '....GGGG..GGGG..GGGG..GGG.....',
-    '................. ..............',
-    '................................',
-    '................................',
-    '................................',
-  ];
-  const colors: Record<string, string> = {
-    G: '#555566', L: '#777788', W: '#99aacc', C: '#00f0ff', M: '#39ff14',
-  };
-
-  return (
-    <svg width={size} height={size / 2} viewBox="0 0 32 16" shapeRendering="crispEdges">
-      {grid.map((row, y) =>
-        row.split("").map((char, x) => {
-          if (char === "." || char === " ") return null;
-          const fill = colors[char];
-          if (!fill) return null;
-          return <rect key={`${x}-${y}`} x={x} y={y} width={1} height={1} fill={fill} />;
-        })
-      )}
-    </svg>
-  );
-}
+import { PixelShip } from "./PixelShip";
 
 // Pixel art skeleton (16x16)
 function PixelSkeleton({ size = 32 }: { size?: number }) {
