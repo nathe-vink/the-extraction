@@ -268,7 +268,13 @@ export default function GamePage() {
       setProcessingPhrase(PROCESSING_PHRASES[i]);
     }, 1500);
 
-    // Poll every 4s as fallback in case Pusher broadcast fails
+    // Auto-reload after 30s stuck in processing — catches Pusher failures that
+    // polling also misses (e.g. when get-state returns a transient server error).
+    const autoReloadTimer = setTimeout(() => {
+      window.location.reload();
+    }, 30000);
+
+    // Poll every 2s as fallback in case Pusher broadcast fails
     const pollInterval = setInterval(async () => {
       try {
         const res = await fetch("/api/game", {
@@ -278,6 +284,7 @@ export default function GamePage() {
         });
         const data = await res.json();
         if (data.success && data.gameState && data.gameState.phase !== "processing") {
+          clearTimeout(autoReloadTimer);
           setGameState(data.gameState);
           setReadyCount(data.gameState.readyPlayers?.length || 0);
           const msgs = data.gameState.messages || [];
@@ -285,9 +292,9 @@ export default function GamePage() {
           if (lastAlien) setIntroText(lastAlien.text);
         }
       } catch { /* ignore polling errors */ }
-    }, 4000);
+    }, 2000);
 
-    return () => { clearInterval(phraseInterval); clearInterval(pollInterval); };
+    return () => { clearInterval(phraseInterval); clearInterval(pollInterval); clearTimeout(autoReloadTimer); };
   }, [gameState?.phase, roomCode]);
 
   // Review cycling
@@ -545,7 +552,7 @@ export default function GamePage() {
             </div>
 
             {/* Main input area */}
-            <div className="flex-1 flex flex-col items-center justify-center">
+            <div className={`flex-1 flex flex-col items-center ${isDrawingRound ? "justify-start overflow-y-auto" : "justify-center"}`}>
               {!submittedAnswer ? (
                 <>
                   {timeLeft !== null && (
