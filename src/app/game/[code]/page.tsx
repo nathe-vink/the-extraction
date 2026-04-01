@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { getPusherClient } from "@/lib/pusher-client";
+import { getSocketClient, disconnectSocketClient } from "@/lib/socket-client";
 import { GameState, Player, AVATAR_CONFIG, AnswerReview } from "@/lib/types";
 import { PixelAvatar } from "@/components/PixelAvatar";
 import { PixelAlien } from "@/components/PixelAlien";
@@ -11,7 +11,6 @@ import { TypewriterText } from "@/components/TypewriterText";
 import { DrawingCanvas } from "@/components/DrawingCanvas";
 import { soundEngine } from "@/lib/sound-engine";
 import { ResultScene as NewResultScene } from "@/components/ResultScene";
-import type { Channel } from "pusher-js";
 
 const PROCESSING_PHRASES = [
   "ANALYZING RESPONSES...",
@@ -50,7 +49,7 @@ export default function GamePage() {
   const [drawings, setDrawings] = useState<Record<string, string>>({});
   const [drawingsLoaded, setDrawingsLoaded] = useState(true);
 
-  const channelRef = useRef<Channel | null>(null);
+  const roomRef = useRef<string>('');
   const timerExpiredRef = useRef(false);
   const reviewingDoneRef = useRef(false);
   const previousPhaseRef = useRef<string>("");
@@ -97,86 +96,119 @@ export default function GamePage() {
         }
       });
 
-    const pusher = getPusherClient();
-    const channel = pusher.subscribe(`game-${roomCode}`);
-    channelRef.current = channel;
+    const room = `game-${roomCode.toLowerCase()}`;
+    roomRef.current = room;
 
-    channel.bind("game-update", (data: { gameState: GameState }) => {
-      const gs = data.gameState;
-      setGameState(gs);
-      setReadyCount(gs.readyPlayers?.length || 0);
+    const connectAndJoin = async () => {
+      const authRes = await fetch('/api/socket-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: pid }),
+      });
 
-      if (gs.phase === "questioning") {
-        setSubmittedAnswer(false);
-        setAnswer("");
-        setAnswerCount(0);
-        setIsReady(false);
-        timerExpiredRef.current = false;
+      if (!authRes.ok) {
+        console.error('[socket] failed to get connect token');
+        return;
       }
-      if (gs.phase === "reviewing") {
-        setCurrentReviewIndex(-1);
-        reviewingDoneRef.current = false;
-        // Fetch drawings if this is a drawing round (with retry)
-        if (gs.currentRound?.roundType === "drawing") {
-          setDrawingsLoaded(false);
-          const fetchDrawings = async (retries = 2) => {
-            for (let i = 0; i <= retries; i++) {
-              try {
-                const res = await fetch("/api/game", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "get-drawings", roomCode }),
-                });
-                const d = await res.json();
-                if (d.success && Object.keys(d.drawings || {}).length > 0) {
-                  setDrawings(d.drawings);
-                  return;
-                }
-                console.warn(`Drawing fetch attempt ${i + 1}: success=${d.success}, drawings=${Object.keys(d.drawings || {}).length}`);
-              } catch (err) {
-                console.error(`Drawing fetch attempt ${i + 1} failed:`, err);
-              }
-              if (i < retries) await new Promise(r => setTimeout(r, 1000));
+
+      const { token } = await authRes.json();
+      const socket = getSocketClient(token);
+
+      const joinRoom = () => {
+        socket.emit('room.join', { room }, (err: unknown) => {
+          if (err) {
+            console.error('[socket] room.join failed:', err);
+            return;
+          }
+
+          socket.on('game-update', (data: { gameState: GameState }) => {
+            const gs = data.gameState;
+            setGameState(gs);
+            setReadyCount(gs.readyPlayers?.length || 0);
+
+            if (gs.phase === "questioning") {
+              setSubmittedAnswer(false);
+              setAnswer("");
+              setAnswerCount(0);
+              setIsReady(false);
+              timerExpiredRef.current = false;
             }
-            // Final fallback — set empty drawings so review can still proceed
-            setDrawings({});
-          };
-          fetchDrawings().finally(() => setDrawingsLoaded(true));
-        } else {
-          setDrawingsLoaded(true);
-        }
-      }
-      if (gs.phase === "results" || gs.phase === "intro") {
-        setIsReady(gs.readyPlayers?.includes(playerId) || false);
-      }
-      // Extract latest alien text for display
-      const msgs = gs.messages || [];
-      const lastAlien = [...msgs].reverse().find((m: { sender: string }) => m.sender === "alien");
-      if (lastAlien) setIntroText(lastAlien.text);
-    });
+            if (gs.phase === "reviewing") {
+              setCurrentReviewIndex(-1);
+              reviewingDoneRef.current = false;
+              // Fetch drawings if this is a drawing round (with retry)
+              if (gs.currentRound?.roundType === "drawing") {
+                setDrawingsLoaded(false);
+                const fetchDrawings = async (retries = 2) => {
+                  for (let i = 0; i <= retries; i++) {
+                    try {
+                      const res = await fetch("/api/game", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "get-drawings", roomCode }),
+                      });
+                      const d = await res.json();
+                      if (d.success && Object.keys(d.drawings || {}).length > 0) {
+                        setDrawings(d.drawings);
+                        return;
+                      }
+                      console.warn(`Drawing fetch attempt ${i + 1}: success=${d.success}, drawings=${Object.keys(d.drawings || {}).length}`);
+                    } catch (err) {
+                      console.error(`Drawing fetch attempt ${i + 1} failed:`, err);
+                    }
+                    if (i < retries) await new Promise(r => setTimeout(r, 1000));
+                  }
+                  // Final fallback — set empty drawings so review can still proceed
+                  setDrawings({});
+                };
+                fetchDrawings().finally(() => setDrawingsLoaded(true));
+              } else {
+                setDrawingsLoaded(true);
+              }
+            }
+            if (gs.phase === "results" || gs.phase === "intro") {
+              setIsReady(gs.readyPlayers?.includes(pid) || false);
+            }
+            // Extract latest alien text for display
+            const msgs = gs.messages || [];
+            const lastAlien = [...msgs].reverse().find((m: { sender: string }) => m.sender === "alien");
+            if (lastAlien) setIntroText(lastAlien.text);
+          });
 
-    channel.bind(
-      "answer-live",
-      (data: { answerCount: number; expectedAnswers: number }) => {
-        setAnswerCount(data.answerCount);
-      }
-    );
+          socket.on('answer-live', (data: { answerCount: number; expectedAnswers: number }) => {
+            setAnswerCount(data.answerCount);
+          });
 
-    channel.bind("player-joined", (data: { gameState: GameState }) => {
-      setGameState(data.gameState);
-    });
+          socket.on('player-joined', (data: { gameState: GameState }) => {
+            setGameState(data.gameState);
+          });
 
-    channel.bind(
-      "player-ready",
-      (data: { gameState: GameState }) => {
-        setReadyCount(data.gameState.readyPlayers?.length || 0);
-        setGameState(data.gameState);
+          socket.on('player-ready', (data: { gameState: GameState }) => {
+            setReadyCount(data.gameState.readyPlayers?.length || 0);
+            setGameState(data.gameState);
+          });
+        });
+      };
+
+      // Join immediately if already connected, otherwise wait for connect event
+      if (socket.connected) {
+        joinRoom();
+      } else {
+        socket.once('connect', joinRoom);
       }
-    );
+    };
+
+    connectAndJoin();
 
     return () => {
-      channel.unbind_all();
-      pusher.unsubscribe(`game-${roomCode}`);
+      const socket = getSocketClient('');
+      socket.emit('room.leave', { room });
+      socket.off('game-update');
+      socket.off('answer-live');
+      socket.off('player-joined');
+      socket.off('player-ready');
+      socket.off('connect');
+      disconnectSocketClient();
     };
   }, [roomCode]);
 
@@ -268,13 +300,13 @@ export default function GamePage() {
       setProcessingPhrase(PROCESSING_PHRASES[i]);
     }, 1500);
 
-    // Auto-reload after 30s stuck in processing — catches Pusher failures that
+    // Auto-reload after 30s stuck in processing — catches socket failures that
     // polling also misses (e.g. when get-state returns a transient server error).
     const autoReloadTimer = setTimeout(() => {
       window.location.reload();
     }, 30000);
 
-    // Poll every 2s as fallback in case Pusher broadcast fails
+    // Poll every 2s as fallback in case socket broadcast fails
     const pollInterval = setInterval(async () => {
       try {
         const res = await fetch("/api/game", {

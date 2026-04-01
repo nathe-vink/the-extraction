@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { triggerGameEvent } from "@/lib/pusher-server";
+import { triggerGameEvent } from "@/lib/socket-server";
 import { getGame, setGame } from "@/lib/game-store";
 import {
   generateIntroduction,
@@ -69,7 +69,7 @@ async function broadcast(roomCode: string, event: string, state: GameState, retr
       await triggerGameEvent(roomCode, event, { gameState: sanitized });
       return;
     } catch (err) {
-      console.error(`Pusher broadcast attempt ${attempt + 1} failed for ${event}:`, err);
+      console.error(`Broadcast attempt ${attempt + 1} failed for ${event}:`, err);
       if (attempt < retries) await new Promise(r => setTimeout(r, 500));
     }
   }
