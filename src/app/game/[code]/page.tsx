@@ -53,6 +53,7 @@ export default function GamePage() {
   const timerExpiredRef = useRef(false);
   const reviewingDoneRef = useRef(false);
   const previousPhaseRef = useRef<string>("");
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Initialize sound on first user gesture
   const initSound = useCallback(() => {
@@ -107,7 +108,25 @@ export default function GamePage() {
       });
 
       if (!authRes.ok) {
-        console.error('[socket] failed to get connect token');
+        console.error('[socket] failed to get connect token — falling back to polling');
+        pollingRef.current = setInterval(async () => {
+          try {
+            const res = await fetch('/api/game', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'get-state', roomCode }),
+            });
+            const data = await res.json();
+            if (data.success && data.gameState) {
+              const gs = data.gameState as GameState;
+              setGameState(gs);
+              setReadyCount(gs.readyPlayers?.length || 0);
+              const msgs = gs.messages || [];
+              const lastAlien = [...msgs].reverse().find((m: { sender: string }) => m.sender === 'alien');
+              if (lastAlien) setIntroText(lastAlien.text);
+            }
+          } catch { /* ignore polling errors */ }
+        }, 3000);
         return;
       }
 
@@ -201,6 +220,10 @@ export default function GamePage() {
     connectAndJoin();
 
     return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
       const socket = getSocketClient('');
       socket.emit('room.leave', { room });
       socket.off('game-update');
@@ -573,7 +596,7 @@ export default function GamePage() {
 
         {/* === QUESTIONING — Timer + input === */}
         {phase === "questioning" && gameState.currentRound && (
-          <div className="flex-1 flex flex-col p-4">
+          <div className="flex-1 min-h-0 flex flex-col p-4">
             {/* Question reference at top */}
             <div className="flex-shrink-0 text-center mb-4 pt-2">
               <p className="font-pixel text-[10px] text-gray-500 mb-2">
@@ -584,7 +607,7 @@ export default function GamePage() {
             </div>
 
             {/* Main input area */}
-            <div className={`flex-1 flex flex-col items-center ${isDrawingRound ? "justify-start overflow-y-auto" : "justify-center"}`}>
+            <div className={`flex-1 min-h-0 flex flex-col items-center ${isDrawingRound ? "justify-start overflow-y-auto" : "justify-center"}`}>
               {!submittedAnswer ? (
                 <>
                   {timeLeft !== null && (
