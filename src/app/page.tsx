@@ -1,5 +1,6 @@
 "use client";
 
+
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { PixelShip } from "@/components/PixelShip";
@@ -25,6 +26,18 @@ export default function Home() {
       url: joinUrl,
     });
   }, [nativeShare]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const joinCode = params.get("join");
+    if (joinCode) {
+      setRoomCode(joinCode.toUpperCase());
+      // Pre-fill name from a previous session so they can join in one tap
+      const savedName = localStorage.getItem("playerName");
+      if (savedName) setPlayerName(savedName);
+      setMode("join");
+    }
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

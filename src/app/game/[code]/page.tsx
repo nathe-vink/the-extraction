@@ -729,7 +729,7 @@ export default function GamePage() {
 
         {/* === QUESTIONING — Timer + input === */}
         {phase === "questioning" && gameState.currentRound && (
-          <div className="flex-1 flex flex-col p-4">
+          <div className="flex-1 min-h-0 flex flex-col p-4">
             {/* Question reference at top */}
             <div className="flex-shrink-0 text-center mb-4 pt-2">
               <p className="font-pixel text-[10px] text-gray-500 mb-2">
@@ -740,7 +740,7 @@ export default function GamePage() {
             </div>
 
             {/* Main input area */}
-            <div className={`flex-1 flex flex-col items-center ${isDrawingRound ? "justify-start overflow-y-auto" : "justify-center"}`}>
+            <div className={`flex-1 min-h-0 flex flex-col items-center ${isDrawingRound ? "justify-start overflow-y-auto" : "justify-center"}`}>
               {!submittedAnswer ? (
                 <>
                   {timeLeft !== null && (
