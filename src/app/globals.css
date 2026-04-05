@@ -218,6 +218,19 @@ body {
   animation: fart 0.5s ease-in-out;
 }
 
+@keyframes float-up {
+  0%   { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+  60%  { opacity: 0.8; }
+  100% { transform: translateY(-120px) scale(0.6) rotate(var(--drift)); opacity: 0; }
+}
+
+.poop-float {
+  position: absolute;
+  pointer-events: none;
+  font-size: 1.5rem;
+  animation: float-up 1.2s ease-out forwards;
+}
+
 /* Spaceship */
 .spaceship {
   font-size: 80px;
