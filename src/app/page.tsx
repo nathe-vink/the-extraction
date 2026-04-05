@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { PixelShip } from "@/components/PixelShip";
 
@@ -11,6 +11,18 @@ export default function Home() {
   const [roomCode, setRoomCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const joinCode = params.get("join");
+    if (joinCode) {
+      setRoomCode(joinCode.toUpperCase());
+      // Pre-fill name from a previous session so they can join in one tap
+      const savedName = localStorage.getItem("playerName");
+      if (savedName) setPlayerName(savedName);
+      setMode("join");
+    }
+  }, []);
 
   const handleCreate = async () => {
     if (!playerName.trim()) {

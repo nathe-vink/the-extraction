@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { useShare } from "@/hooks/useShare";
 import { getSocketClient, disconnectSocketClient } from "@/lib/socket-client";
 import { GameState, Player, AVATAR_CONFIG, AnswerReview } from "@/lib/types";
 import { PixelAvatar } from "@/components/PixelAvatar";
@@ -69,6 +70,17 @@ export default function GamePage() {
     setMuted(newMuted);
     soundEngine.setMuted(newMuted);
   }, [muted, initSound]);
+
+  const { share: nativeShare, isCopied: shareCopied } = useShare();
+
+  const handleShare = useCallback(() => {
+    const joinUrl = `${window.location.origin}/?join=${roomCode}`;
+    nativeShare({
+      title: "Join The Extraction",
+      text: `Join my game! Room code: ${roomCode}`,
+      url: joinUrl,
+    });
+  }, [roomCode, nativeShare]);
 
   // Initialize
   useEffect(() => {
@@ -580,7 +592,13 @@ export default function GamePage() {
             <div className="text-center">
               <p className="font-pixel text-xs text-gray-400 mb-2">ROOM CODE</p>
               <p className="room-code">{roomCode}</p>
-              <p className="text-gray-500 text-sm mt-2">Share this code with your friends</p>
+              <button
+                onClick={handleShare}
+                disabled={shareCopied}
+                className="mt-3 btn-neon btn-neon-pink py-2 px-6 text-sm"
+              >
+                {shareCopied ? "✓ Link Copied!" : "Share Invite"}
+              </button>
             </div>
             <div className="w-full max-w-xs space-y-3">
               <p className="font-pixel text-xs neon-text-blue text-center">CREW ({gameState.players.length}/8)</p>
