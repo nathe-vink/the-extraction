@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { useShare } from "@/hooks/useShare";
 import { getSocketClient, disconnectSocketClient } from "@/lib/socket-client";
 import { GameState, Player, AVATAR_CONFIG, AnswerReview } from "@/lib/types";
 import { PixelAvatar } from "@/components/PixelAvatar";
@@ -70,22 +71,16 @@ export default function GamePage() {
     soundEngine.setMuted(newMuted);
   }, [muted, initSound]);
 
-  const handleShare = useCallback(async () => {
+  const { share: nativeShare, isCopied: shareCopied } = useShare();
+
+  const handleShare = useCallback(() => {
     const joinUrl = `${window.location.origin}/?join=${roomCode}`;
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: "Join The Extraction",
-          text: `Join my game! Room code: ${roomCode}`,
-          url: joinUrl,
-        });
-      } catch {
-        // User cancelled or share failed — ignore
-      }
-    } else {
-      await navigator.clipboard.writeText(joinUrl);
-    }
-  }, [roomCode]);
+    nativeShare({
+      title: "Join The Extraction",
+      text: `Join my game! Room code: ${roomCode}`,
+      url: joinUrl,
+    });
+  }, [roomCode, nativeShare]);
 
   // Initialize
   useEffect(() => {
@@ -599,9 +594,10 @@ export default function GamePage() {
               <p className="room-code">{roomCode}</p>
               <button
                 onClick={handleShare}
+                disabled={shareCopied}
                 className="mt-3 btn-neon btn-neon-pink py-2 px-6 text-sm"
               >
-                Share Invite
+                {shareCopied ? "✓ Link Copied!" : "Share Invite"}
               </button>
             </div>
             <div className="w-full max-w-xs space-y-3">

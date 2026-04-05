@@ -17,6 +17,9 @@ export default function Home() {
     const joinCode = params.get("join");
     if (joinCode) {
       setRoomCode(joinCode.toUpperCase());
+      // Pre-fill name from a previous session so they can join in one tap
+      const savedName = localStorage.getItem("playerName");
+      if (savedName) setPlayerName(savedName);
       setMode("join");
     }
   }, []);
