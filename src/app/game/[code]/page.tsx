@@ -329,6 +329,80 @@ export default function GamePage() {
     return () => { clearInterval(phraseInterval); clearInterval(pollInterval); clearTimeout(autoReloadTimer); };
   }, [gameState?.phase, roomCode]);
 
+  // Broad polling fallback — keeps all non-processing phases in sync when the
+  // socket layer is unavailable (e.g. service outage, connect failure).
+  useEffect(() => {
+    if (!gameState) return;
+    const phase = gameState.phase;
+    // processing has its own poll; result/final-results are client-driven animations
+    if (phase === "processing" || phase === "result" || phase === "final-results") return;
+
+    const pid = playerId;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get-state", roomCode }),
+        });
+        const data = await res.json();
+        if (!data.success || !data.gameState) return;
+        const gs = data.gameState as GameState;
+        if (gs.phase === phase) return; // no change yet
+
+        setGameState(gs);
+        setReadyCount(gs.readyPlayers?.length || 0);
+
+        if (gs.phase === "questioning") {
+          setSubmittedAnswer(false);
+          setAnswer("");
+          setAnswerCount(0);
+          setIsReady(false);
+          timerExpiredRef.current = false;
+        }
+        if (gs.phase === "reviewing") {
+          setCurrentReviewIndex(-1);
+          reviewingDoneRef.current = false;
+          if (gs.currentRound?.roundType === "drawing") {
+            setDrawingsLoaded(false);
+            const fetchDrawings = async (retries = 2) => {
+              for (let i = 0; i <= retries; i++) {
+                try {
+                  const r = await fetch("/api/game", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "get-drawings", roomCode }),
+                  });
+                  const d = await r.json();
+                  if (d.success && Object.keys(d.drawings || {}).length > 0) {
+                    setDrawings(d.drawings);
+                    return;
+                  }
+                } catch (err) {
+                  console.error(`Poll drawing fetch attempt ${i + 1} failed:`, err);
+                }
+                if (i < retries) await new Promise(r => setTimeout(r, 1000));
+              }
+              setDrawings({});
+            };
+            fetchDrawings().finally(() => setDrawingsLoaded(true));
+          } else {
+            setDrawingsLoaded(true);
+          }
+        }
+        if (gs.phase === "results" || gs.phase === "intro") {
+          setIsReady(gs.readyPlayers?.includes(pid) || false);
+        }
+        const msgs = gs.messages || [];
+        const lastAlien = [...msgs].reverse().find((m: { sender: string }) => m.sender === "alien");
+        if (lastAlien) setIntroText(lastAlien.text);
+      } catch { /* ignore poll errors */ }
+    }, 3000);
+
+    return () => clearInterval(pollInterval);
+  }, [gameState?.phase, roomCode, playerId]);
+
   // Review cycling
   useEffect(() => {
     if (gameState?.phase !== "reviewing" || !gameState.currentRound?.answerReviews?.length || !drawingsLoaded) return;
