@@ -77,6 +77,8 @@ export interface GameState {
   gameStartedAt: number | null;
   roundDeadline: number | null;
   readyPlayers: string[];
+  questionQueue: Record<number, string>;
+  cachedSendoff: string | null;
 }
 
 export interface PusherGameEvent {
@@ -138,5 +140,7 @@ export function createInitialGameState(roomCode: string): GameState {
     gameStartedAt: null,
     roundDeadline: null,
     readyPlayers: [],
+    questionQueue: {},
+    cachedSendoff: null,
   };
 }

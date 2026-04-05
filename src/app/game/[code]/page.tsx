@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { useShare } from "@/hooks/useShare";
 import { getSocketClient, disconnectSocketClient } from "@/lib/socket-client";
 import { GameState, Player, AVATAR_CONFIG, AnswerReview } from "@/lib/types";
 import { PixelAvatar } from "@/components/PixelAvatar";
@@ -69,6 +70,17 @@ export default function GamePage() {
     setMuted(newMuted);
     soundEngine.setMuted(newMuted);
   }, [muted, initSound]);
+
+  const { share: nativeShare, isCopied: shareCopied } = useShare();
+
+  const handleShare = useCallback(() => {
+    const joinUrl = `${window.location.origin}/?join=${roomCode}`;
+    nativeShare({
+      title: "Join The Extraction",
+      text: `Join my game! Room code: ${roomCode}`,
+      url: joinUrl,
+    });
+  }, [roomCode, nativeShare]);
 
   // Initialize
   useEffect(() => {
@@ -212,6 +224,52 @@ export default function GamePage() {
     };
   }, [roomCode]);
 
+  // Poll get-state so clients always have fresh state regardless of socket reliability.
+  // Faster during "processing" (waiting on Claude), normal pace otherwise.
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get-state", roomCode }),
+        });
+        const data = await res.json();
+        if (data.success && data.gameState) {
+          const gs: GameState = data.gameState;
+          setGameState((prev) => {
+            // Only update if something actually changed (phase or round state)
+            if (!prev) return gs;
+            if (prev.phase !== gs.phase) return gs;
+            if (prev.currentRound?.roundNumber !== gs.currentRound?.roundNumber) return gs;
+            if (prev.players.length !== gs.players.length) return gs;
+            if (prev.readyPlayers.length !== gs.readyPlayers.length) return gs;
+            return prev;
+          });
+        }
+      } catch {
+        // silent — socket events are still the primary path
+      }
+    };
+
+    const startPolling = (ms: number) => {
+      clearInterval(interval);
+      interval = setInterval(poll, ms);
+    };
+
+    // Poll faster during processing (Claude is working), slower otherwise
+    const phase = gameState?.phase;
+    if (phase === "processing" || phase === "arrival") {
+      startPolling(1500);
+    } else {
+      startPolling(3000);
+    }
+
+    return () => clearInterval(interval);
+  }, [roomCode, gameState?.phase]);
+
   // Phase transition overlay
   useEffect(() => {
     if (!gameState) return;
@@ -328,6 +386,80 @@ export default function GamePage() {
 
     return () => { clearInterval(phraseInterval); clearInterval(pollInterval); clearTimeout(autoReloadTimer); };
   }, [gameState?.phase, roomCode]);
+
+  // Broad polling fallback — keeps all non-processing phases in sync when the
+  // socket layer is unavailable (e.g. service outage, connect failure).
+  useEffect(() => {
+    if (!gameState) return;
+    const phase = gameState.phase;
+    // processing has its own poll; result/final-results are client-driven animations
+    if (phase === "processing" || phase === "result" || phase === "final-results") return;
+
+    const pid = playerId;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get-state", roomCode }),
+        });
+        const data = await res.json();
+        if (!data.success || !data.gameState) return;
+        const gs = data.gameState as GameState;
+        if (gs.phase === phase) return; // no change yet
+
+        setGameState(gs);
+        setReadyCount(gs.readyPlayers?.length || 0);
+
+        if (gs.phase === "questioning") {
+          setSubmittedAnswer(false);
+          setAnswer("");
+          setAnswerCount(0);
+          setIsReady(false);
+          timerExpiredRef.current = false;
+        }
+        if (gs.phase === "reviewing") {
+          setCurrentReviewIndex(-1);
+          reviewingDoneRef.current = false;
+          if (gs.currentRound?.roundType === "drawing") {
+            setDrawingsLoaded(false);
+            const fetchDrawings = async (retries = 2) => {
+              for (let i = 0; i <= retries; i++) {
+                try {
+                  const r = await fetch("/api/game", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "get-drawings", roomCode }),
+                  });
+                  const d = await r.json();
+                  if (d.success && Object.keys(d.drawings || {}).length > 0) {
+                    setDrawings(d.drawings);
+                    return;
+                  }
+                } catch (err) {
+                  console.error(`Poll drawing fetch attempt ${i + 1} failed:`, err);
+                }
+                if (i < retries) await new Promise(r => setTimeout(r, 1000));
+              }
+              setDrawings({});
+            };
+            fetchDrawings().finally(() => setDrawingsLoaded(true));
+          } else {
+            setDrawingsLoaded(true);
+          }
+        }
+        if (gs.phase === "results" || gs.phase === "intro") {
+          setIsReady(gs.readyPlayers?.includes(pid) || false);
+        }
+        const msgs = gs.messages || [];
+        const lastAlien = [...msgs].reverse().find((m: { sender: string }) => m.sender === "alien");
+        if (lastAlien) setIntroText(lastAlien.text);
+      } catch { /* ignore poll errors */ }
+    }, 3000);
+
+    return () => clearInterval(pollInterval);
+  }, [gameState?.phase, roomCode, playerId]);
 
   // Review cycling
   useEffect(() => {
@@ -506,7 +638,13 @@ export default function GamePage() {
             <div className="text-center">
               <p className="font-pixel text-xs text-gray-400 mb-2">ROOM CODE</p>
               <p className="room-code">{roomCode}</p>
-              <p className="text-gray-500 text-sm mt-2">Share this code with your friends</p>
+              <button
+                onClick={handleShare}
+                disabled={shareCopied}
+                className="mt-3 btn-neon btn-neon-pink py-2 px-6 text-sm"
+              >
+                {shareCopied ? "✓ Link Copied!" : "Share Invite"}
+              </button>
             </div>
             <div className="w-full max-w-xs space-y-3">
               <p className="font-pixel text-xs neon-text-blue text-center">CREW ({gameState.players.length}/8)</p>
