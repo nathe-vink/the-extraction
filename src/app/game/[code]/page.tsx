@@ -224,6 +224,52 @@ export default function GamePage() {
     };
   }, [roomCode]);
 
+  // Poll get-state so clients always have fresh state regardless of socket reliability.
+  // Faster during "processing" (waiting on Claude), normal pace otherwise.
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "get-state", roomCode }),
+        });
+        const data = await res.json();
+        if (data.success && data.gameState) {
+          const gs: GameState = data.gameState;
+          setGameState((prev) => {
+            // Only update if something actually changed (phase or round state)
+            if (!prev) return gs;
+            if (prev.phase !== gs.phase) return gs;
+            if (prev.currentRound?.roundNumber !== gs.currentRound?.roundNumber) return gs;
+            if (prev.players.length !== gs.players.length) return gs;
+            if (prev.readyPlayers.length !== gs.readyPlayers.length) return gs;
+            return prev;
+          });
+        }
+      } catch {
+        // silent — socket events are still the primary path
+      }
+    };
+
+    const startPolling = (ms: number) => {
+      clearInterval(interval);
+      interval = setInterval(poll, ms);
+    };
+
+    // Poll faster during processing (Claude is working), slower otherwise
+    const phase = gameState?.phase;
+    if (phase === "processing" || phase === "arrival") {
+      startPolling(1500);
+    } else {
+      startPolling(3000);
+    }
+
+    return () => clearInterval(interval);
+  }, [roomCode, gameState?.phase]);
+
   // Phase transition overlay
   useEffect(() => {
     if (!gameState) return;
@@ -507,10 +553,28 @@ export default function GamePage() {
 
   const handleReady = async () => {
     initSound();
-    if (isReady) return;
     setIsReady(true);
     soundEngine.playReady();
     await callAPI("ready");
+  };
+
+  const [poopFarting, setPoopFarting] = useState(false);
+  const [floatingPoops, setFloatingPoops] = useState<{ id: number; x: number; drift: number }[]>([]);
+  const poopIdRef = useRef(0);
+
+  const handlePoopReady = () => {
+    // Shake animation (only once)
+    if (!poopFarting) {
+      setPoopFarting(true);
+      setTimeout(() => setPoopFarting(false), 500);
+    }
+    // Spawn a floating poop every click — random x offset and drift
+    const id = ++poopIdRef.current;
+    const x = Math.random() * 40 - 20; // -20 to +20px horizontal scatter
+    const drift = Math.random() * 40 - 20; // rotation drift at top
+    setFloatingPoops((prev) => [...prev, { id, x, drift }]);
+    setTimeout(() => setFloatingPoops((prev) => prev.filter((p) => p.id !== id)), 1200);
+    handleReady();
   };
 
   const handleSubmitAnswer = async () => {
@@ -654,7 +718,7 @@ export default function GamePage() {
             </div>
             {introTypingDone && (
               <div className="animate-fade-in text-center space-y-3">
-                <button onClick={handleReady} disabled={isReady} className={`btn-neon py-3 px-8 ${isReady ? "opacity-50" : ""}`}>
+                <button onClick={handleReady} className={`btn-neon py-3 px-8 ${isReady ? "opacity-50" : ""}`}>
                   {isReady ? "Ready \u2713" : "Ready"}
                 </button>
                 <p className="font-pixel text-xs neon-text-blue">{readyCount} of {gameState.players.length} ready</p>
@@ -757,9 +821,28 @@ export default function GamePage() {
               />
             </div>
             <div className="flex-shrink-0 text-center space-y-2 pb-4">
-              <button onClick={handleReady} disabled={isReady} className={`btn-neon py-2 px-6 text-xs ${isReady ? "opacity-50" : ""}`}>
-                {isReady ? "Ready \u2713" : "Next Round"}
-              </button>
+              <div className="flex items-center justify-center gap-4">
+                <button onClick={handleReady} className={`btn-neon py-2 px-6 text-xs ${isReady ? "opacity-50" : ""}`}>
+                  {isReady ? "Ready \u2713" : "Next Round"}
+                </button>
+                <button
+                  onClick={handlePoopReady}
+                  className={`relative text-2xl leading-none bg-transparent border-none cursor-pointer select-none transition-opacity ${isReady ? "opacity-30" : "hover:scale-110"} ${poopFarting ? "poop-fart" : ""}`}
+                  title=""
+                >
+                  💩
+                  {poopFarting && <span className="absolute -top-3 -right-3 text-sm pointer-events-none">💨</span>}
+                  {floatingPoops.map((p) => (
+                    <span
+                      key={p.id}
+                      className="poop-float"
+                      style={{ left: `calc(50% + ${p.x}px)`, bottom: "100%", "--drift": `${p.drift}deg` } as React.CSSProperties}
+                    >
+                      💩
+                    </span>
+                  ))}
+                </button>
+              </div>
               <p className="font-pixel text-[10px] neon-text-blue">{readyCount} of {gameState.players.length} ready</p>
             </div>
           </div>

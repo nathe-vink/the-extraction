@@ -91,19 +91,18 @@ async function setupNextQuestion(
 
   if (nextRoundNum > TOTAL_ROUNDS) {
     // All rounds complete — determine winner and go to final results
-    const topPlayer = Object.entries(state.scores).sort(
-      ([, a], [, b]) => b - a
-    )[0];
-    state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+    if (!state.winnerId) {
+      const topPlayer = Object.entries(state.scores).sort(
+        ([, a], [, b]) => b - a
+      )[0];
+      state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+    }
     state.phase = "final-results";
     state.roundDeadline = null;
 
-    try {
-      const sendoff = await generateSendoff(state, state.winnerId);
-      addMessage(state, "alien", sendoff);
-    } catch {
-      addMessage(state, "alien", "Get on the ship. NOW. We're leaving.");
-    }
+    const sendoff = state.cachedSendoff ?? await generateSendoff(state, state.winnerId!).catch(() => null);
+    addMessage(state, "alien", sendoff ?? "Get on the ship. NOW. We're leaving.");
+    state.cachedSendoff = null;
 
     await setGame(roomCode, state);
     await broadcast(roomCode, "game-update", state);
@@ -114,7 +113,8 @@ async function setupNextQuestion(
 
   let question: string;
   try {
-    question = await generateQuestion(state, roundType);
+    question = state.questionQueue[nextRoundNum] ?? await generateQuestion(state, roundType);
+    delete state.questionQueue[nextRoundNum];
   } catch {
     question = "Tell me something interesting. I'm running out of patience.";
   }
@@ -222,6 +222,38 @@ async function processRound(
   state.phase = "reviewing";
   await setGame(roomCode, state);
   await broadcast(roomCode, "game-update", state);
+
+  // Pre-fetch next question(s) while clients watch reviews
+  // state.roundHistory.length = rounds already archived (current not yet archived)
+  // so next round after archiving = roundHistory.length + 2
+  const prefetchRoundNum = state.roundHistory.length + 2;
+  try {
+    if (prefetchRoundNum === 3) {
+      // Batch 2 of 2: R3 (drawing) + R4 (group) in parallel
+      const [q3, q4] = await Promise.all([
+        generateQuestion(state, "drawing", 3),
+        generateQuestion(state, "group", 4),
+      ]);
+      state.questionQueue[3] = q3;
+      state.questionQueue[4] = q4;
+      await setGame(roomCode, state);
+    } else if (prefetchRoundNum === 5) {
+      // Final: R5 (final-plea)
+      const q5 = await generateQuestion(state, "final-plea", 5);
+      state.questionQueue[5] = q5;
+      await setGame(roomCode, state);
+    } else if (prefetchRoundNum > TOTAL_ROUNDS) {
+      // Pre-cache sendoff so final Ready click is instant
+      const topPlayer = Object.entries(state.scores).sort(([, a], [, b]) => b - a)[0];
+      const winnerId = topPlayer?.[0] || state.players[0]?.id;
+      state.winnerId = winnerId;
+      const sendoff = await generateSendoff(state, winnerId);
+      state.cachedSendoff = sendoff;
+      await setGame(roomCode, state);
+    }
+  } catch (err) {
+    console.error("Error pre-fetching next question:", err);
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -380,6 +412,18 @@ export async function POST(request: NextRequest) {
           role: "assistant",
           content: `Introduction: ${introduction}. Players: ${state.players.map((p) => p.name).join(", ")}`,
         });
+
+        // Batch 1 of 2: R1 + R2 in parallel while players read the intro
+        try {
+          const [q1, q2] = await Promise.all([
+            generateQuestion(state, getRoundType(1), 1),
+            generateQuestion(state, getRoundType(2), 2),
+          ]);
+          state.questionQueue[1] = q1;
+          state.questionQueue[2] = q2;
+        } catch (err) {
+          console.error("Error pre-fetching R1/R2:", err);
+        }
 
         // Move to intro phase — players must ready up
         state.phase = "intro";

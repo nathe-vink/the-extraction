@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { PixelShip } from "@/components/PixelShip";
+import { useShare } from "@/hooks/useShare";
 
 export default function Home() {
   const router = useRouter();
@@ -11,6 +13,31 @@ export default function Home() {
   const [roomCode, setRoomCode] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [createdRoomCode, setCreatedRoomCode] = useState<string | null>(null);
+  const [createdGamePath, setCreatedGamePath] = useState<string | null>(null);
+
+  const { share: nativeShare, isCopied: shareCopied } = useShare();
+
+  const handleShareInvite = useCallback((code: string) => {
+    const joinUrl = `${window.location.origin}/?join=${code}`;
+    nativeShare({
+      title: "Join The Extraction",
+      text: `Join my game! Room code: ${code}`,
+      url: joinUrl,
+    });
+  }, [nativeShare]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const joinCode = params.get("join");
+    if (joinCode) {
+      setRoomCode(joinCode.toUpperCase());
+      // Pre-fill name from a previous session so they can join in one tap
+      const savedName = localStorage.getItem("playerName");
+      if (savedName) setPlayerName(savedName);
+      setMode("join");
+    }
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -49,7 +76,8 @@ export default function Home() {
         localStorage.setItem("playerId", data.playerId);
         localStorage.setItem("playerName", playerName.trim());
         localStorage.setItem("roomCode", data.roomCode);
-        router.push(`/game/${data.roomCode}`);
+        setCreatedRoomCode(data.roomCode);
+        setCreatedGamePath(`/game/${data.roomCode}`);
       } else {
         setError(data.error || "Failed to create game");
       }
@@ -140,7 +168,7 @@ export default function Home() {
           </div>
         )}
 
-        {mode === "create" && (
+        {mode === "create" && !createdRoomCode && (
           <div className="space-y-4 animate-slide-up">
             <div>
               <label className="block text-xs text-neon-green font-pixel mb-2">
@@ -171,6 +199,25 @@ export default function Home() {
               className="text-gray-500 text-sm w-full text-center hover:text-gray-300"
             >
               &larr; Back
+            </button>
+          </div>
+        )}
+
+        {mode === "create" && createdRoomCode && createdGamePath && (
+          <div className="space-y-4 animate-slide-up text-center">
+            <p className="font-pixel text-xs text-gray-400">ROOM CODE</p>
+            <p className="room-code">{createdRoomCode}</p>
+            <button
+              onClick={() => handleShareInvite(createdRoomCode)}
+              className="btn-neon btn-neon-pink w-full py-3"
+            >
+              {shareCopied ? "Link Copied!" : "Invite Players"}
+            </button>
+            <button
+              onClick={() => router.push(createdGamePath)}
+              className="btn-neon w-full py-4"
+            >
+              Enter Lobby
             </button>
           </div>
         )}

@@ -204,6 +204,33 @@ body {
   30% { opacity: 1; transform: scale(1.2); }
 }
 
+@keyframes fart {
+  0%   { transform: translate(0, 0) rotate(0deg); }
+  15%  { transform: translate(-4px, 2px) rotate(-8deg) scale(1.15); }
+  30%  { transform: translate(4px, -3px) rotate(10deg) scale(1.2); }
+  45%  { transform: translate(-3px, 3px) rotate(-6deg) scale(1.1); }
+  60%  { transform: translate(3px, -2px) rotate(8deg) scale(1.15); }
+  75%  { transform: translate(-2px, 1px) rotate(-4deg) scale(1.05); }
+  100% { transform: translate(0, 0) rotate(0deg) scale(1); }
+}
+
+.poop-fart {
+  animation: fart 0.5s ease-in-out;
+}
+
+@keyframes float-up {
+  0%   { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+  60%  { opacity: 0.8; }
+  100% { transform: translateY(-120px) scale(0.6) rotate(var(--drift)); opacity: 0; }
+}
+
+.poop-float {
+  position: absolute;
+  pointer-events: none;
+  font-size: 1.5rem;
+  animation: float-up 1.2s ease-out forwards;
+}
+
 /* Spaceship */
 .spaceship {
   font-size: 80px;

@@ -129,9 +129,10 @@ Respond in JSON: { "introduction": "..." }`,
 
 export async function generateQuestion(
   state: GameState,
-  roundType: "group" | "drawing" | "final-plea"
+  roundType: "group" | "drawing" | "final-plea",
+  roundNumOverride?: number
 ): Promise<string> {
-  const roundNum = state.roundHistory.length + 1;
+  const roundNum = roundNumOverride ?? state.roundHistory.length + 1;
   const history = buildRoundHistory(state);
   const scoreSummary = Object.entries(state.scores)
     .map(([pid, score]) => {
