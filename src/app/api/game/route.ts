@@ -231,15 +231,15 @@ async function processRound(
     if (prefetchRoundNum === 3) {
       // Batch 2 of 2: R3 (drawing) + R4 (group) in parallel
       const [q3, q4] = await Promise.all([
-        generateQuestion(state, "drawing"),
-        generateQuestion(state, "group"),
+        generateQuestion(state, "drawing", 3),
+        generateQuestion(state, "group", 4),
       ]);
       state.questionQueue[3] = q3;
       state.questionQueue[4] = q4;
       await setGame(roomCode, state);
     } else if (prefetchRoundNum === 5) {
       // Final: R5 (final-plea)
-      const q5 = await generateQuestion(state, "final-plea");
+      const q5 = await generateQuestion(state, "final-plea", 5);
       state.questionQueue[5] = q5;
       await setGame(roomCode, state);
     } else if (prefetchRoundNum > TOTAL_ROUNDS) {
@@ -416,8 +416,8 @@ export async function POST(request: NextRequest) {
         // Batch 1 of 2: R1 + R2 in parallel while players read the intro
         try {
           const [q1, q2] = await Promise.all([
-            generateQuestion(state, getRoundType(1)),
-            generateQuestion(state, getRoundType(2)),
+            generateQuestion(state, getRoundType(1), 1),
+            generateQuestion(state, getRoundType(2), 2),
           ]);
           state.questionQueue[1] = q1;
           state.questionQueue[2] = q2;
