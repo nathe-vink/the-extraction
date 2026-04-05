@@ -559,6 +559,14 @@ export default function GamePage() {
     await callAPI("ready");
   };
 
+  const [poopFarting, setPoopFarting] = useState(false);
+  const handlePoopReady = () => {
+    if (poopFarting) return;
+    setPoopFarting(true);
+    setTimeout(() => setPoopFarting(false), 500);
+    handleReady();
+  };
+
   const handleSubmitAnswer = async () => {
     initSound();
     if (!answer.trim()) return;
@@ -803,9 +811,20 @@ export default function GamePage() {
               />
             </div>
             <div className="flex-shrink-0 text-center space-y-2 pb-4">
-              <button onClick={handleReady} disabled={isReady} className={`btn-neon py-2 px-6 text-xs ${isReady ? "opacity-50" : ""}`}>
-                {isReady ? "Ready \u2713" : "Next Round"}
-              </button>
+              <div className="flex items-center justify-center gap-4">
+                <button onClick={handleReady} disabled={isReady} className={`btn-neon py-2 px-6 text-xs ${isReady ? "opacity-50" : ""}`}>
+                  {isReady ? "Ready \u2713" : "Next Round"}
+                </button>
+                <button
+                  onClick={handlePoopReady}
+                  disabled={isReady}
+                  className={`relative text-2xl leading-none bg-transparent border-none cursor-pointer select-none transition-opacity ${isReady ? "opacity-30 cursor-default" : "hover:scale-110"} ${poopFarting ? "poop-fart" : ""}`}
+                  title=""
+                >
+                  💩
+                  {poopFarting && <span className="absolute -top-3 -right-3 text-sm pointer-events-none">💨</span>}
+                </button>
+              </div>
               <p className="font-pixel text-[10px] neon-text-blue">{readyCount} of {gameState.players.length} ready</p>
             </div>
           </div>
