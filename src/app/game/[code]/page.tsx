@@ -553,7 +553,6 @@ export default function GamePage() {
 
   const handleReady = async () => {
     initSound();
-    if (isReady) return;
     setIsReady(true);
     soundEngine.playReady();
     await callAPI("ready");
@@ -719,7 +718,7 @@ export default function GamePage() {
             </div>
             {introTypingDone && (
               <div className="animate-fade-in text-center space-y-3">
-                <button onClick={handleReady} disabled={isReady} className={`btn-neon py-3 px-8 ${isReady ? "opacity-50" : ""}`}>
+                <button onClick={handleReady} className={`btn-neon py-3 px-8 ${isReady ? "opacity-50" : ""}`}>
                   {isReady ? "Ready \u2713" : "Ready"}
                 </button>
                 <p className="font-pixel text-xs neon-text-blue">{readyCount} of {gameState.players.length} ready</p>
@@ -823,13 +822,12 @@ export default function GamePage() {
             </div>
             <div className="flex-shrink-0 text-center space-y-2 pb-4">
               <div className="flex items-center justify-center gap-4">
-                <button onClick={handleReady} disabled={isReady} className={`btn-neon py-2 px-6 text-xs ${isReady ? "opacity-50" : ""}`}>
+                <button onClick={handleReady} className={`btn-neon py-2 px-6 text-xs ${isReady ? "opacity-50" : ""}`}>
                   {isReady ? "Ready \u2713" : "Next Round"}
                 </button>
                 <button
                   onClick={handlePoopReady}
-                  disabled={isReady}
-                  className={`relative text-2xl leading-none bg-transparent border-none cursor-pointer select-none transition-opacity ${isReady ? "opacity-30 cursor-default" : "hover:scale-110"} ${poopFarting ? "poop-fart" : ""}`}
+                  className={`relative text-2xl leading-none bg-transparent border-none cursor-pointer select-none transition-opacity ${isReady ? "opacity-30" : "hover:scale-110"} ${poopFarting ? "poop-fart" : ""}`}
                   title=""
                 >
                   💩
