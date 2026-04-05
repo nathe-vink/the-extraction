@@ -123,7 +123,9 @@ export default function GamePage() {
 
           socket.on('game-update', (data: { gameState: GameState }) => {
             const gs = data.gameState;
-            setGameState(gs);
+            // "result" is a client-only animation phase — don't let server
+            // events (which never emit "result") reset it mid-animation.
+            setGameState(prev => prev?.phase === "result" ? prev : gs);
             setReadyCount(gs.readyPlayers?.length || 0);
 
             if (gs.phase === "questioning") {
@@ -185,7 +187,7 @@ export default function GamePage() {
 
           socket.on('player-ready', (data: { gameState: GameState }) => {
             setReadyCount(data.gameState.readyPlayers?.length || 0);
-            setGameState(data.gameState);
+            setGameState(prev => prev?.phase === "result" ? prev : data.gameState);
           });
         });
       };
@@ -335,6 +337,27 @@ export default function GamePage() {
     const startTimer = setTimeout(() => setCurrentReviewIndex(0), 800);
     return () => clearTimeout(startTimer);
   }, [gameState?.phase, gameState?.currentRound?.answerReviews?.length, drawingsLoaded]);
+
+  // Safety escape: if the server enters "reviewing" with zero reviews (e.g. all
+  // players timed out without submitting), the normal cycling logic never fires
+  // because answerReviews.length is falsy. Skip straight to reviewing-done so
+  // the game can continue rather than hanging forever.
+  useEffect(() => {
+    if (gameState?.phase !== "reviewing") return;
+    if ((gameState.currentRound?.answerReviews?.length ?? 0) > 0) return;
+    if (reviewingDoneRef.current) return;
+    const timer = setTimeout(() => {
+      if (!reviewingDoneRef.current) {
+        reviewingDoneRef.current = true;
+        fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reviewing-done", roomCode }),
+        });
+      }
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [gameState?.phase, gameState?.currentRound?.answerReviews?.length, roomCode]);
 
   // Auto-advance reviews
   useEffect(() => {
