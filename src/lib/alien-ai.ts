@@ -327,8 +327,11 @@ Respond in JSON:
     messages.push({ role: "user", content: prompt });
   }
 
-  const fallbackReviews: AnswerReview[] = Object.keys(answers).map((pid) => ({
-    playerId: pid,
+  // Use all players (not just answerers) so fallback always produces one review
+  // per player — prevents an empty-reviews state that permanently sticks the
+  // client in the "reviewing" phase when no answers were submitted.
+  const fallbackReviews: AnswerReview[] = state.players.map((player) => ({
+    playerId: player.id,
     comment: "Hmm. I've seen worse. Not much worse, but worse.",
     score: Math.floor(Math.random() * (maxScore * 0.4)) + Math.floor(maxScore * 0.3),
   }));
