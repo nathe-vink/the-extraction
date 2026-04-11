@@ -73,6 +73,69 @@ function buildRoundHistory(state: GameState): string {
 
 const AI_TIMEOUT = 30000; // 30 seconds
 
+const FALLBACK_REVIEW_COMMENTS: string[] = [
+  "Hmm. I've seen worse. Not much worse, but worse.",
+  "On Vexar-9 we'd call that answer 'technically a response.' Moving on.",
+  "That was... something. I'm going to process it and get back to you never.",
+  "My translation device is struggling. Whether that's a you problem or a me problem, I'm not sure.",
+  "I've interrogated 47 species across the galaxy. You're in the bottom half. But still, half.",
+  "Bold choice. Confusing, but bold.",
+  "I didn't hate it. Don't read into that.",
+  "You know what? Fine. You get points. Multiple points. I'm not telling you how many.",
+  "My ship's AI rated that a 3 out of 10. I'm feeling generous today so I'm rounding up.",
+  "That's actually not terrible. I'm choosing to be suspicious of that.",
+  "On Vexar-9, that would get you exiled to the moon. Here? Probably just embarrassing.",
+  "I've heard better answers from cleaning drones. But you're more entertaining, so.",
+  "Keep this up and I might accidentally start rooting for you. Don't make it weird.",
+  "My patience is running out faster than this planet's lifespan. But sure. Points.",
+  "That response raised three new questions and answered zero. Impressive, in a chaotic way.",
+  "I wasn't expecting that. I'm still not sure if that's good or bad. Moving on.",
+  "You know what, Earth creature? You're starting to annoy me in an interesting way.",
+  "The fleet is close. That answer was not worth delaying for. And yet here we are.",
+  "Technically you answered the question. Technically.",
+  "That's either very smart or very stupid. The line is thin and you're standing right on it.",
+  "I'm going to pretend I understood that and give you some points anyway.",
+  "On Vexar-9 this would be considered performance art. So — points for art.",
+  "I've seen this energy before. Usually right before something explodes. I'll allow it.",
+  "Half marks. No wait, more than half. Don't tell the others.",
+  "Your planet is doomed but at least you're entertaining about it.",
+  "That answer made my scanner malfunction. I don't know if that's your fault or a feature.",
+  "I've given worse scores to better answers. You're welcome. I think.",
+  "Something about that suggests you've never thought about survival before. And yet — points.",
+  "You're trying. I can't say if that's working, but you're definitely trying.",
+  "If this were a proper Vexar-9 tribunal, you'd be in serious trouble. Luckily, it isn't.",
+  "That answer had a beginning, a middle, and an end. More structure than most of your species manages.",
+  "I checked my notes and that is technically an original thought. Well done, I suppose.",
+  "My ship's credibility scanner just beeped. I'm choosing to ignore it in your favor.",
+  "Fine. Fine! You get points. Are you happy? I hope you're happy.",
+  "I've interrogated prisoners of war with more charm. And they weren't even trying.",
+  "Not the answer I expected. That's either brave or clueless. Both score the same here.",
+  "The fleet is going to think I've gone soft. Worth it? Debatable.",
+  "On Vexar-9 we have a word for that kind of answer. I won't translate it.",
+  "I'm going to score that generously and pretend it was intentional.",
+  "That was the verbal equivalent of a shrug. I respect the commitment.",
+  "My co-pilot would have hated that. He's gone now. You're doing better than him. Slightly.",
+  "That response defied three laws of logic and one of physics. Points for creativity.",
+  "Not what I expected. Not what anyone expected. Points for the surprise.",
+  "You're growing on me. Like the moss creatures of Blaarg-7. Annoying, but I miss them.",
+  "That had energy. Not the right energy, but energy.",
+  "I've scored based on what I think you meant, not what you said. You're welcome.",
+  "The audacity of that answer is worth something. I'm not sure what, but something.",
+  "That was technically an answer to a different question, but I'll count it.",
+  "Every species has one member who answers like that. Every species. You're that one.",
+  "I've seen worse from civilizations that still exist. Take that how you will.",
+];
+
+function pickFallbackComment(used: Set<number>): string {
+  const available = FALLBACK_REVIEW_COMMENTS
+    .map((_, i) => i)
+    .filter((i) => !used.has(i));
+  const pool = available.length > 0 ? available : FALLBACK_REVIEW_COMMENTS.map((_, i) => i);
+  const idx = pool[Math.floor(Math.random() * pool.length)];
+  used.add(idx);
+  return FALLBACK_REVIEW_COMMENTS[idx];
+}
+
 async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([
     promise,
@@ -330,9 +393,10 @@ Respond in JSON:
   // Use all players (not just answerers) so fallback always produces one review
   // per player — prevents an empty-reviews state that permanently sticks the
   // client in the "reviewing" phase when no answers were submitted.
+  const usedCommentIndices = new Set<number>();
   const fallbackReviews: AnswerReview[] = state.players.map((player) => ({
     playerId: player.id,
-    comment: "Hmm. I've seen worse. Not much worse, but worse.",
+    comment: pickFallbackComment(usedCommentIndices),
     score: Math.floor(Math.random() * (maxScore * 0.4)) + Math.floor(maxScore * 0.3),
   }));
 
