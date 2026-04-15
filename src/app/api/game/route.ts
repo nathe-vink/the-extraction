@@ -6,6 +6,7 @@ import {
   generateQuestion,
   generateAnswerReviews,
   generateSendoff,
+  generateVoteReaction,
 } from "@/lib/alien-ai";
 import {
   GameState,
@@ -127,6 +128,10 @@ async function setupNextQuestion(
     alienReaction: "",
     answerReviews: [],
     roundScores: {},
+    votes: {},
+    votingDeadline: null,
+    voteReaction: "",
+    voteBonus: {},
   };
 
   addMessage(state, "alien", question);
@@ -254,6 +259,62 @@ async function processRound(
   } catch (err) {
     console.error("Error pre-fetching next question:", err);
   }
+}
+
+const VOTE_DURATION = 20000; // 20 seconds
+
+// Tally votes, apply bonuses, generate ZYRAX reaction, advance to results
+async function processVotes(state: GameState, roomCode: string): Promise<void> {
+  if (!state.currentRound) return;
+  const round = state.currentRound;
+
+  // Count votes per player
+  const voteCounts: Record<string, number> = {};
+  for (const votedForId of Object.values(round.votes)) {
+    voteCounts[votedForId] = (voteCounts[votedForId] || 0) + 1;
+  }
+
+  // Find the highest vote count
+  const maxVotes = Math.max(0, ...Object.values(voteCounts));
+  const winners = maxVotes > 0
+    ? Object.entries(voteCounts).filter(([, count]) => count === maxVotes).map(([pid]) => pid)
+    : [];
+
+  // Apply bonuses: sole winner = +200, tied winners = +100 each
+  const bonus = winners.length === 1 ? 200 : 100;
+  for (const winnerId of winners) {
+    round.voteBonus[winnerId] = bonus;
+    round.roundScores[winnerId] = (round.roundScores[winnerId] || 0) + bonus;
+    state.scores[winnerId] = (state.scores[winnerId] || 0) + bonus;
+  }
+
+  // Determine ZYRAX's top AI scorer for the reaction
+  const aiTopEntry = Object.entries(round.roundScores)
+    .map(([pid, score]) => ({ pid, score: score - (round.voteBonus[pid] || 0) }))
+    .sort((a, b) => b.score - a.score)[0];
+
+  const crowdWinnerId = winners[0] || "";
+  const crowdWinner = state.players.find((p) => p.id === crowdWinnerId);
+  const aiTopPlayer = state.players.find((p) => p.id === aiTopEntry?.pid);
+  const agreed = crowdWinnerId === aiTopEntry?.pid;
+  const crowdWinnerAnswer = round.roundType === "drawing" ? "[a drawing]" : (round.answers[crowdWinnerId] || "");
+
+  round.voteReaction = await generateVoteReaction(
+    crowdWinner?.name || "someone",
+    crowdWinnerAnswer,
+    aiTopPlayer?.name || "someone",
+    agreed
+  ).catch(() => agreed
+    ? "Finally, you agree with me. Mark this date in history."
+    : "Questionable taste, humans. But noted."
+  );
+
+  round.votingDeadline = null;
+
+  // Stay in "voting" phase — client detects voteReaction is set, runs reveal
+  // animation, then calls "voting-done" to advance to results.
+  await setGame(roomCode, state);
+  await broadcast(roomCode, "game-update", state);
 }
 
 export async function POST(request: NextRequest) {
@@ -549,12 +610,80 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
         }
 
-        // Move to results phase — show leaderboard, players ready up
-        state.phase = "results";
+        // Skip voting for single-player games (can't vote for yourself)
+        if (state.players.length <= 1) {
+          state.phase = "results";
+          state.readyPlayers = [];
+          await setGame(roomCode, state);
+          await broadcast(roomCode, "game-update", state);
+          return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+        }
+
+        // Move to voting phase
+        if (state.currentRound) {
+          state.currentRound.votes = {};
+          state.currentRound.votingDeadline = Date.now() + VOTE_DURATION;
+          state.currentRound.voteReaction = "";
+          state.currentRound.voteBonus = {};
+        }
+        state.phase = "voting";
         state.readyPlayers = [];
         await setGame(roomCode, state);
         await broadcast(roomCode, "game-update", state);
 
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      case "submit-vote": {
+        const { roomCode, playerId, votedForId } = body;
+        const state = await getGame(roomCode);
+        if (!state || !state.currentRound || state.phase !== "voting") {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+
+        // Can't vote for yourself
+        if (votedForId === playerId) {
+          return NextResponse.json({ success: false, error: "Can't vote for yourself" });
+        }
+
+        // Record vote (one per player, overwrite if resubmitted before timer)
+        state.currentRound.votes[playerId] = votedForId;
+        await setGame(roomCode, state);
+        await broadcast(roomCode, "game-update", state);
+
+        // Advance early if all eligible voters have voted (players minus bots/missing)
+        const eligibleVoters = state.players.length;
+        if (Object.keys(state.currentRound.votes).length >= eligibleVoters) {
+          await processVotes(state, roomCode);
+        }
+
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      case "vote-timer-expire": {
+        const { roomCode } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "voting" || !state.currentRound) {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+        // Only process if not already done (voteReaction empty = not yet processed)
+        if (!state.currentRound.voteReaction) {
+          await processVotes(state, roomCode);
+        }
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      // Client signals vote reveal animation is done → advance to results
+      case "voting-done": {
+        const { roomCode } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "voting") {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+        state.phase = "results";
+        state.readyPlayers = [];
+        await setGame(roomCode, state);
+        await broadcast(roomCode, "game-update", state);
         return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
       }
 

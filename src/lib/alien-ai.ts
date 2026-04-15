@@ -380,6 +380,47 @@ Respond in JSON:
   }
 }
 
+export async function generateVoteReaction(
+  crowdWinnerName: string,
+  crowdWinnerAnswer: string,
+  aiHighestName: string,
+  agreed: boolean
+): Promise<string> {
+  const fallback = agreed
+    ? `Finally, you primitives show some taste. ${crowdWinnerName}'s answer was the obvious choice.`
+    : `Fascinating. You chose ${crowdWinnerName}'s answer. I'll be noting this lapse in judgment in my harvest report.`;
+
+  const prompt = agreed
+    ? `The crowd voted for ${crowdWinnerName}, whose answer was "${crowdWinnerAnswer}". Coincidentally, you also scored them highest. React smugly — the humans finally agree with your impeccable taste. 1 sentence.`
+    : `You scored ${aiHighestName} highest, but the crowd picked ${crowdWinnerName} (answer: "${crowdWinnerAnswer}"). React with indignant disbelief that they chose THAT over your top pick. 1 sentence.`;
+
+  try {
+    const response = await withTimeout(
+      client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 100,
+        system: ALIEN_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: `${prompt}\n\nRespond in JSON: { "reaction": "..." }` }],
+      }),
+      AI_TIMEOUT,
+      null
+    );
+
+    if (!response) return fallback;
+    const text = response.content[0].type === "text" ? response.content[0].text : "";
+    try {
+      return JSON.parse(text).reaction;
+    } catch {
+      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (jsonMatch) return JSON.parse(jsonMatch[1]).reaction;
+      return fallback;
+    }
+  } catch (err) {
+    console.error("Error generating vote reaction:", err);
+    return fallback;
+  }
+}
+
 export async function generateSendoff(
   state: GameState,
   winnerId: string
