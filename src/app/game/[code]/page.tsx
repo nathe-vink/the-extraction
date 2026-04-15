@@ -49,10 +49,15 @@ export default function GamePage() {
   const [introTypingDone, setIntroTypingDone] = useState(false);
   const [drawings, setDrawings] = useState<Record<string, string>>({});
   const [drawingsLoaded, setDrawingsLoaded] = useState(true);
+  const [selectedVote, setSelectedVote] = useState<string | null>(null);
+  const [voteSubmitted, setVoteSubmitted] = useState(false);
+  const [votingTimeLeft, setVotingTimeLeft] = useState<number | null>(null);
 
   const roomRef = useRef<string>('');
   const timerExpiredRef = useRef(false);
   const reviewingDoneRef = useRef(false);
+  const votingTimerExpiredRef = useRef(false);
+  const votingDoneRef = useRef(false);
   const previousPhaseRef = useRef<string>("");
 
   // Initialize sound on first user gesture
@@ -146,6 +151,12 @@ export default function GamePage() {
               setAnswerCount(0);
               setIsReady(false);
               timerExpiredRef.current = false;
+            }
+            if (gs.phase === "voting") {
+              setSelectedVote(null);
+              setVoteSubmitted(false);
+              votingTimerExpiredRef.current = false;
+              votingDoneRef.current = false;
             }
             if (gs.phase === "reviewing") {
               setCurrentReviewIndex(-1);
@@ -261,9 +272,9 @@ export default function GamePage() {
       interval = setInterval(poll, ms);
     };
 
-    // Poll faster during processing (Claude is working), slower otherwise
+    // Poll faster during processing/voting (Claude is working), slower otherwise
     const phase = gameState?.phase;
-    if (phase === "processing" || phase === "arrival") {
+    if (phase === "processing" || phase === "arrival" || phase === "voting") {
       startPolling(1500);
     } else {
       startPolling(3000);
@@ -290,6 +301,8 @@ export default function GamePage() {
       soundEngine.playRoundStart();
     } else if (phase === "reviewing") {
       text = "REVIEWING ANSWERS...";
+    } else if (phase === "voting") {
+      text = "THE CROWD DECIDES...";
     } else if (phase === "results") {
       text = "SCORES ARE IN";
     } else if (phase === "final-results") {
@@ -336,6 +349,51 @@ export default function GamePage() {
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [gameState?.roundDeadline, gameState?.phase, roomCode]);
+
+  // Voting countdown timer
+  useEffect(() => {
+    const deadline = gameState?.currentRound?.votingDeadline;
+    if (!deadline || gameState?.phase !== "voting" || gameState?.currentRound?.voteReaction) {
+      setVotingTimeLeft(null);
+      return;
+    }
+
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setVotingTimeLeft(remaining);
+      if (remaining <= 0 && !votingTimerExpiredRef.current) {
+        votingTimerExpiredRef.current = true;
+        fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "vote-timer-expire", roomCode }),
+        });
+      }
+    };
+
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [gameState?.currentRound?.votingDeadline, gameState?.phase, gameState?.currentRound?.voteReaction, roomCode]);
+
+  // Auto-advance after vote reveal animation (6s)
+  useEffect(() => {
+    if (gameState?.phase !== "voting") return;
+    if (!gameState.currentRound?.voteReaction) return;
+    if (votingDoneRef.current) return;
+
+    const timer = setTimeout(() => {
+      if (!votingDoneRef.current) {
+        votingDoneRef.current = true;
+        fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "voting-done", roomCode }),
+        });
+      }
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [gameState?.phase, gameState?.currentRound?.voteReaction, roomCode]);
 
   // Ambient sound during questioning
   useEffect(() => {
@@ -420,6 +478,12 @@ export default function GamePage() {
           setAnswerCount(0);
           setIsReady(false);
           timerExpiredRef.current = false;
+        }
+        if (gs.phase === "voting") {
+          setSelectedVote(null);
+          setVoteSubmitted(false);
+          votingTimerExpiredRef.current = false;
+          votingDoneRef.current = false;
         }
         if (gs.phase === "reviewing") {
           setCurrentReviewIndex(-1);
@@ -832,6 +896,34 @@ export default function GamePage() {
           />
         )}
 
+        {/* === VOTING === */}
+        {phase === "voting" && gameState.currentRound && (
+          gameState.currentRound.voteReaction ? (
+            <VoteRevealScreen
+              round={gameState.currentRound}
+              players={gameState.players}
+              drawings={drawings}
+              currentPlayerId={playerId}
+            />
+          ) : (
+            <VotingScreen
+              round={gameState.currentRound}
+              players={gameState.players}
+              currentPlayerId={playerId}
+              selectedVote={selectedVote}
+              voteSubmitted={voteSubmitted}
+              votingTimeLeft={votingTimeLeft}
+              drawings={drawings}
+              onVote={(votedForId) => {
+                initSound();
+                setSelectedVote(votedForId);
+                setVoteSubmitted(true);
+                callAPI("submit-vote", { votedForId });
+              }}
+            />
+          )
+        )}
+
         {/* === RESULTS — Leaderboard + ready up === */}
         {phase === "results" && gameState.currentRound && (
           <div className="flex-1 flex flex-col p-4">
@@ -1006,6 +1098,202 @@ function ReviewScreen({
             transitionDelay: "800ms",
           }}
         />
+      </div>
+    </div>
+  );
+}
+
+function VotingScreen({
+  round,
+  players,
+  currentPlayerId,
+  selectedVote,
+  voteSubmitted,
+  votingTimeLeft,
+  drawings,
+  onVote,
+}: {
+  round: { question: string; answers: Record<string, string>; roundType: string; votes: Record<string, string> };
+  players: Player[];
+  currentPlayerId: string;
+  selectedVote: string | null;
+  voteSubmitted: boolean;
+  votingTimeLeft: number | null;
+  drawings: Record<string, string>;
+  onVote: (votedForId: string) => void;
+}) {
+  const isDrawing = round.roundType === "drawing";
+  const timerColor = votingTimeLeft !== null && votingTimeLeft <= 5 ? "var(--neon-pink)" : "var(--neon-green)";
+  const voteCount = Object.keys(round.votes).length;
+  const totalPlayers = players.length;
+
+  // Stable order — exclude current player (can't vote for self), sort by pid for consistency
+  const answerCards = Object.entries(round.answers)
+    .filter(([pid]) => pid !== currentPlayerId)
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  if (voteSubmitted) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-6 gap-4">
+        <p className="font-pixel text-xs neon-text-green text-center mb-2">VOTE CAST</p>
+        <div className="text-4xl mb-2">🗳️</div>
+        <p className="text-gray-400 text-sm text-center">Waiting for others...</p>
+        <p className="font-pixel text-[10px] neon-text-blue">{voteCount} / {totalPlayers} voted</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex flex-col p-4 gap-4">
+      <div className="flex-shrink-0 text-center pt-2">
+        <p className="font-pixel text-[10px] text-gray-500 mb-1">CROWD VOTE</p>
+        <p className="text-gray-300 text-sm">Which answer deserves to survive?</p>
+        {votingTimeLeft !== null && (
+          <p className="font-pixel text-xl mt-2" style={{ color: timerColor }}>{votingTimeLeft}</p>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto grid grid-cols-1 gap-3 pb-2">
+        {answerCards.map(([pid, answer]) => {
+          const isSelected = selectedVote === pid;
+          const drawingData = drawings[pid];
+
+          return (
+            <button
+              key={pid}
+              onClick={() => onVote(pid)}
+              className={`w-full text-left p-4 rounded-xl border transition-all duration-150 ${
+                isSelected
+                  ? "border-neon-green bg-neon-green/10 shadow-[0_0_12px_var(--neon-green)]"
+                  : "border-white/10 bg-white/5 hover:border-white/30 hover:bg-white/10"
+              }`}
+            >
+              {isDrawing && drawingData ? (
+                <div className="flex justify-center">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={drawingData}
+                    alt="Anonymous drawing"
+                    className="rounded max-w-[180px]"
+                    style={{ imageRendering: "pixelated" }}
+                  />
+                </div>
+              ) : (
+                <p className="text-gray-200 text-sm">{answer === "[drawing]" ? "🎨 [Drawing]" : answer}</p>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function VoteRevealScreen({
+  round,
+  players,
+  drawings,
+  currentPlayerId,
+}: {
+  round: {
+    question: string;
+    answers: Record<string, string>;
+    roundType: string;
+    votes: Record<string, string>;
+    voteReaction: string;
+    voteBonus: Record<string, number>;
+  };
+  players: Player[];
+  drawings: Record<string, string>;
+  currentPlayerId: string;
+}) {
+  const isDrawing = round.roundType === "drawing";
+
+  // Tally votes
+  const voteCounts: Record<string, number> = {};
+  for (const votedForId of Object.values(round.votes)) {
+    voteCounts[votedForId] = (voteCounts[votedForId] || 0) + 1;
+  }
+  const maxVotes = Math.max(0, ...Object.values(voteCounts));
+
+  // Sort by vote count descending
+  const rankedEntries = Object.entries(round.answers)
+    .map(([pid, answer]) => ({
+      pid,
+      answer,
+      votes: voteCounts[pid] || 0,
+      bonus: round.voteBonus[pid] || 0,
+      player: players.find((p) => p.id === pid),
+    }))
+    .sort((a, b) => b.votes - a.votes);
+
+  return (
+    <div className="flex-1 flex flex-col p-4 gap-4 overflow-y-auto animate-fade-in">
+      <p className="font-pixel text-[10px] neon-text-pink text-center flex-shrink-0">THE CROWD HAS SPOKEN</p>
+
+      {/* ZYRAX reaction */}
+      <div className="alien-bubble p-3 flex-shrink-0">
+        <p className="text-gray-200 text-sm leading-relaxed">
+          <TypewriterText
+            text={round.voteReaction}
+            speed={20}
+            onWordSound={() => soundEngine.playTypewriterTick()}
+          />
+        </p>
+      </div>
+
+      {/* Ranked answers with vote counts */}
+      <div className="flex flex-col gap-3">
+        {rankedEntries.map(({ pid, answer, votes, bonus, player }, i) => {
+          const isWinner = votes === maxVotes && maxVotes > 0;
+          const isYou = pid === currentPlayerId;
+          const drawingData = drawings[pid];
+          const avatarColor = AVATAR_CONFIG[player?.avatar || "hillbilly"]?.color || "#39ff14";
+
+          return (
+            <div
+              key={pid}
+              className={`rounded-xl p-3 border animate-slide-up ${
+                isWinner && i === 0
+                  ? "border-neon-pink/60 bg-neon-pink/10"
+                  : "border-white/10 bg-white/5"
+              }`}
+              style={{ animationDelay: `${i * 200}ms` }}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <PixelAvatar type={player?.avatar || "hillbilly"} size={28} animated />
+                <span className={`text-sm flex-1 font-semibold ${isYou ? "text-white" : "text-gray-300"}`}>
+                  {player?.name}{isYou ? " (you)" : ""}
+                </span>
+                {isWinner && i === 0 && <span className="text-lg">👑</span>}
+                <span className="font-pixel text-xs" style={{ color: avatarColor }}>
+                  {votes} vote{votes !== 1 ? "s" : ""}
+                </span>
+                {bonus > 0 && (
+                  <span className="font-pixel text-xs neon-text-yellow">+{bonus}</span>
+                )}
+              </div>
+              {isDrawing && drawingData ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img src={drawingData} alt={`${player?.name}'s drawing`} className="rounded max-w-[140px]" style={{ imageRendering: "pixelated" }} />
+              ) : (
+                <p className="text-gray-400 text-xs pl-9">{answer === "[drawing]" ? "🎨 [Drawing]" : answer}</p>
+              )}
+              {/* Vote bar */}
+              <div className="mt-2 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-1000 ease-out"
+                  style={{
+                    width: maxVotes > 0 ? `${(votes / maxVotes) * 100}%` : "0%",
+                    backgroundColor: avatarColor,
+                    boxShadow: `0 0 6px ${avatarColor}`,
+                    transitionDelay: `${i * 300 + 400}ms`,
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

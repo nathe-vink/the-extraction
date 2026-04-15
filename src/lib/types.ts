@@ -37,6 +37,7 @@ export type GamePhase =
   | "questioning"
   | "processing"
   | "reviewing"
+  | "voting"
   | "results"
   | "final-results"
   | "result";
@@ -62,6 +63,10 @@ export interface RoundState {
   alienReaction: string;
   answerReviews: AnswerReview[];
   roundScores: Record<string, number>;
+  votes: Record<string, string>;       // voterId → playerId they voted for
+  votingDeadline: number | null;
+  voteReaction: string;
+  voteBonus: Record<string, number>;   // playerId → bonus awarded (200 or 100)
 }
 
 export interface GameState {
@@ -94,7 +99,9 @@ export type GameAction =
   | { action: "submit-answer"; roomCode: string; playerId: string; answer: string }
   | { action: "timer-expire"; roomCode: string }
   | { action: "ready"; roomCode: string; playerId: string }
-  | { action: "get-state"; roomCode: string };
+  | { action: "get-state"; roomCode: string }
+  | { action: "submit-vote"; roomCode: string; playerId: string; votedForId: string }
+  | { action: "vote-timer-expire"; roomCode: string };
 
 export interface GameResponse {
   success: boolean;
