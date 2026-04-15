@@ -71,7 +71,19 @@ function buildRoundHistory(state: GameState): string {
     .join("\n\n");
 }
 
+import { FALLBACK_REVIEW_COMMENTS } from "./zyrax-fallbacks";
+
 const AI_TIMEOUT = 30000; // 30 seconds
+
+function pickFallbackComment(used: Set<number>): string {
+  const available = FALLBACK_REVIEW_COMMENTS
+    .map((_, i) => i)
+    .filter((i) => !used.has(i));
+  const pool = available.length > 0 ? available : FALLBACK_REVIEW_COMMENTS.map((_, i) => i);
+  const idx = pool[Math.floor(Math.random() * pool.length)];
+  used.add(idx);
+  return FALLBACK_REVIEW_COMMENTS[idx];
+}
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([
@@ -330,9 +342,10 @@ Respond in JSON:
   // Use all players (not just answerers) so fallback always produces one review
   // per player — prevents an empty-reviews state that permanently sticks the
   // client in the "reviewing" phase when no answers were submitted.
+  const usedCommentIndices = new Set<number>();
   const fallbackReviews: AnswerReview[] = state.players.map((player) => ({
     playerId: player.id,
-    comment: "Hmm. I've seen worse. Not much worse, but worse.",
+    comment: pickFallbackComment(usedCommentIndices),
     score: Math.floor(Math.random() * (maxScore * 0.4)) + Math.floor(maxScore * 0.3),
   }));
 
