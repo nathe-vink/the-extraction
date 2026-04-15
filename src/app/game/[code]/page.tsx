@@ -887,13 +887,33 @@ export default function GamePage() {
 
         {/* === REVIEWING — One answer at a time, full screen === */}
         {phase === "reviewing" && gameState.currentRound && (
-          <ReviewScreen
-            round={gameState.currentRound}
-            players={gameState.players}
-            currentReviewIndex={currentReviewIndex}
-            currentPlayerId={playerId}
-            drawings={drawings}
-          />
+          <>
+            {/* Host-only offline mode badge */}
+            {gameState.aiOffline && isHost && (
+              <div className="w-full flex justify-center px-4 pt-2">
+                <span className="font-pixel text-[8px] neon-text-yellow border border-yellow-400/30 px-2 py-1 rounded">
+                  OFFLINE MODE
+                </span>
+              </div>
+            )}
+            {/* In-character ZYRAX "pre-recorded" message — shown only on first review */}
+            {gameState.aiOffline && currentReviewIndex === 0 && gameState.currentRound.alienReaction && (
+              <div className="px-4 pt-2 w-full max-w-md mx-auto">
+                <div className="alien-bubble p-3">
+                  <p className="text-gray-300 text-xs leading-relaxed italic">
+                    {gameState.currentRound.alienReaction}
+                  </p>
+                </div>
+              </div>
+            )}
+            <ReviewScreen
+              round={gameState.currentRound}
+              players={gameState.players}
+              currentReviewIndex={currentReviewIndex}
+              currentPlayerId={playerId}
+              drawings={drawings}
+            />
+          </>
         )}
 
         {/* === VOTING === */}
