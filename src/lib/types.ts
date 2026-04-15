@@ -84,6 +84,7 @@ export interface GameState {
   readyPlayers: string[];
   questionQueue: Record<number, string>;
   cachedSendoff: string | null;
+  aiOffline?: boolean;
 }
 
 export interface PusherGameEvent {

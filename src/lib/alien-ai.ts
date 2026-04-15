@@ -71,9 +71,18 @@ function buildRoundHistory(state: GameState): string {
     .join("\n\n");
 }
 
-import { FALLBACK_REVIEW_COMMENTS } from "./zyrax-fallbacks";
+import { FALLBACK_REVIEW_COMMENTS, generateFallbackReview } from "./zyrax-fallbacks";
 
-const AI_TIMEOUT = 30000; // 30 seconds
+const AI_TIMEOUT = 15000; // 15 seconds
+
+// Set to true once a credit/billing error is detected — skips all further API calls
+let aiDisabled = false;
+
+function isCreditError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes("credit") || msg.includes("balance") || msg.includes("billing") || msg.includes("quota");
+}
 
 function pickFallbackComment(used: Set<number>): string {
   const available = FALLBACK_REVIEW_COMMENTS
@@ -134,6 +143,7 @@ Respond in JSON: { "introduction": "..." }`,
       return fallback;
     }
   } catch (err) {
+    if (isCreditError(err)) aiDisabled = true;
     console.error("Error generating introduction:", err);
     return fallback;
   }
@@ -254,6 +264,7 @@ Respond in JSON: { "question": "..." }`;
       return fallback;
     }
   } catch (err) {
+    if (isCreditError(err)) aiDisabled = true;
     console.error("Error generating question:", err);
     return fallback;
   }
@@ -264,6 +275,7 @@ export async function generateAnswerReviews(
   answers: Record<string, string>
 ): Promise<{
   reviews: AnswerReview[];
+  usedFallback: boolean;
 }> {
   const roundNum = state.roundHistory.length + 1;
   const isFinalPlea = state.currentRound?.roundType === "final-plea";
@@ -345,39 +357,72 @@ Respond in JSON:
   const usedCommentIndices = new Set<number>();
   const fallbackReviews: AnswerReview[] = state.players.map((player) => ({
     playerId: player.id,
-    comment: pickFallbackComment(usedCommentIndices),
-    score: Math.floor(Math.random() * (maxScore * 0.4)) + Math.floor(maxScore * 0.3),
+    comment: "",
+    score: 0,
   }));
+  const buildFallbackReviews = (): AnswerReview[] =>
+    state.players.map((player) => {
+      const { comment, score } = generateFallbackReview(
+        answers[player.id],
+        isDrawing,
+        maxScore,
+        usedCommentIndices
+      );
+      return { playerId: player.id, comment, score };
+    });
 
-  try {
-    const response = await withTimeout(
-      client.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 800,
-        system: ALIEN_SYSTEM_PROMPT,
-        messages,
-      }),
-      AI_TIMEOUT,
-      null
-    );
-
-    if (!response) return { reviews: fallbackReviews };
-    const text = response.content[0].type === "text" ? response.content[0].text : "";
-    try {
-      const parsed = JSON.parse(text);
-      return { reviews: parsed.reviews };
-    } catch {
-      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[1]);
-        return { reviews: parsed.reviews };
-      }
-      return { reviews: fallbackReviews };
-    }
-  } catch (err) {
-    console.error("Error generating answer reviews:", err);
-    return { reviews: fallbackReviews };
+  // Skip API entirely if credits already known to be exhausted
+  if (aiDisabled) {
+    return { reviews: buildFallbackReviews(), usedFallback: true };
   }
+
+  // Attempt the API call with one retry for transient errors.
+  // Credit errors skip the retry and disable AI for the rest of the session.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await withTimeout(
+        client.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 800,
+          system: ALIEN_SYSTEM_PROMPT,
+          messages,
+        }),
+        AI_TIMEOUT,
+        null
+      );
+
+      if (!response) {
+        // Timed out — retry once, then fall back
+        continue;
+      }
+
+      const text = response.content[0].type === "text" ? response.content[0].text : "";
+      try {
+        const parsed = JSON.parse(text);
+        return { reviews: parsed.reviews, usedFallback: false };
+      } catch {
+        const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[1]);
+          return { reviews: parsed.reviews, usedFallback: false };
+        }
+        // Malformed JSON — retry once, then fall back
+        continue;
+      }
+    } catch (err) {
+      if (isCreditError(err)) {
+        console.error("AI credits exhausted — disabling AI for this session");
+        aiDisabled = true;
+        return { reviews: buildFallbackReviews(), usedFallback: true };
+      }
+      console.error(`Error generating answer reviews (attempt ${attempt + 1}):`, err);
+      // Non-credit error — retry once
+    }
+  }
+
+  // Both attempts failed
+  console.error("generateAnswerReviews: both attempts failed, using fallback");
+  return { reviews: buildFallbackReviews(), usedFallback: true };
 }
 
 export async function generateVoteReaction(
@@ -416,6 +461,7 @@ export async function generateVoteReaction(
       return fallback;
     }
   } catch (err) {
+    if (isCreditError(err)) aiDisabled = true;
     console.error("Error generating vote reaction:", err);
     return fallback;
   }
@@ -469,6 +515,7 @@ Deliver a quick, panicked sendoff. The fleet is HERE. You need to grab ${winner?
       return fallback;
     }
   } catch (err) {
+    if (isCreditError(err)) aiDisabled = true;
     console.error("Error generating sendoff:", err);
     return fallback;
   }
