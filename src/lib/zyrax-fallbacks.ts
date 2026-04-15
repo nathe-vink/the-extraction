@@ -203,3 +203,129 @@ export const FALLBACK_REVIEW_COMMENTS: string[] = [
   "I'm worried about you — but the universe has a way of rewarding the inexplicable.",
   "On Vexar-9 that would not make the cut. On this planet, today, with this group — points.",
 ];
+
+// ─── Answer-aware fallback review generator ───────────────────────────────────
+// Used when the AI is offline. Produces a comment that references the player's
+// actual answer text so it doesn't feel completely generic.
+
+function extractSnippet(answer: string): string {
+  const words = answer.trim().split(/\s+/).filter(Boolean);
+  const taken = words.slice(0, 7).join(" ");
+  // Strip trailing punctuation to keep the snippet clean for embedding
+  return taken.replace(/[.,!?;:]+$/, "");
+}
+
+const SNIPPET_COMMENTS_SHORT = [
+  (s: string) => `"${s}." That's it? That's *all*? Fine. Points for efficiency.`,
+  (s: string) => `I see you went with "${s}." Bold. Minimal. Vaguely suspicious.`,
+  (s: string) => `"${s}" — short, punchy, and somehow still confusing. I respect it.`,
+  (s: string) => `"${s}." My scanner flagged that as 'technically an answer.' Moving on.`,
+  (s: string) => `I didn't ask for brevity but here we are. "${s}." Points.`,
+  (s: string) => `"${s}" — you had one job and you did exactly that job. Points.`,
+  (s: string) => `Short. To the point. "${s}." I've heard worse from diplomats.`,
+  (s: string) => `"${s}." Just that. I'm processing. It's taking longer than expected.`,
+];
+
+const SNIPPET_COMMENTS_MEDIUM = [
+  (s: string) => `"${s}..." — you had more to say. The restraint is either wise or suspicious.`,
+  (s: string) => `Okay so you went with "${s}..." I noticed. I'm still noticing.`,
+  (s: string) => `"${s}..." — that's where you started. Points for the journey.`,
+  (s: string) => `"${s}..." Interesting opening. I'll give you that. Points.`,
+  (s: string) => `I read "${s}..." and I had thoughts. Most of them were points.`,
+  (s: string) => `"${s}..." You landed on that. On purpose. I'm going to assume on purpose.`,
+  (s: string) => `"${s}..." — solid start. Whether it held up is another matter. Points anyway.`,
+  (s: string) => `You said "${s}..." and then kept going. I respect the commitment.`,
+];
+
+const SNIPPET_COMMENTS_LONG = [
+  (s: string) => `You said a lot. "${s}..." — I read the first part. The effort is noted.`,
+  (s: string) => `"${s}..." and then more. Much more. Points for the dedication.`,
+  (s: string) => `I appreciate the length. "${s}..." — strong opener. Points.`,
+  (s: string) => `"${s}..." — you had things to say. All of them. At once. Points.`,
+  (s: string) => `You really went for it. "${s}..." Points for ambition if nothing else.`,
+  (s: string) => `"${s}..." — I'm skimming. The score reflects the parts I liked.`,
+  (s: string) => `Longest answer this round. "${s}..." Points. You earned them word by word.`,
+  (s: string) => `"${s}..." My co-pilot would have stopped reading there. I did not. Points.`,
+];
+
+const EMPTY_COMMENTS = [
+  "...you submitted nothing. *Nothing.* And yet here we are. Minimum points.",
+  "I received your answer. It was empty. That's a choice. A terrible choice. Points.",
+  "No answer. Not even an attempt. I'm giving points out of pity and not mentioning it again.",
+  "Blank. You sent blank. On Vexar-9 this would be a diplomatic incident. Here? Points. Barely.",
+  "Nothing from you. I've seen this before. It never ends well. Points, because I'm generous.",
+];
+
+const DRAWING_COMMENTS = [
+  "Your drawing tells me more than you intended. I'm choosing not to say what.",
+  "I analyzed the image. I have questions. I'll keep them to myself. Points.",
+  "Visual. Bold. Slightly alarming. Points for courage.",
+  "On Vexar-9 we have a museum for drawings like this. It's not a compliment. Points.",
+  "My scanner processed that image three times. The results were 'inconclusive.' Points.",
+  "I'm looking at what you drew. I'm still looking. Points.",
+  "That drawing said something. I'm not sure what. Points for mystery.",
+  "My translation device doesn't handle images well. But what little I got — points.",
+];
+
+function pickFromPool<T>(pool: T[], used: Set<number>): T {
+  const available = pool.map((_, i) => i).filter((i) => !used.has(i));
+  const indices = available.length > 0 ? available : pool.map((_, i) => i);
+  const idx = indices[Math.floor(Math.random() * indices.length)];
+  used.add(idx);
+  return pool[idx];
+}
+
+function scoreFromEffort(wordCount: number, isDrawing: boolean, maxScore: number): number {
+  let base: number;
+  if (isDrawing) {
+    base = 0.35 + Math.random() * 0.30; // 35–65%
+  } else if (wordCount === 0) {
+    base = 0.15 + Math.random() * 0.20; // 15–35%
+  } else if (wordCount <= 5) {
+    base = 0.25 + Math.random() * 0.20; // 25–45%
+  } else if (wordCount <= 15) {
+    base = 0.40 + Math.random() * 0.20; // 40–60%
+  } else if (wordCount <= 30) {
+    base = 0.50 + Math.random() * 0.20; // 50–70%
+  } else {
+    base = 0.60 + Math.random() * 0.20; // 60–80%
+  }
+  // ±5% jitter
+  const jitter = (Math.random() - 0.5) * 0.10;
+  return Math.round(Math.min(1, Math.max(0, base + jitter)) * maxScore);
+}
+
+export function generateFallbackReview(
+  answer: string | undefined,
+  isDrawing: boolean,
+  maxScore: number,
+  used: Set<number>
+): { comment: string; score: number } {
+  if (isDrawing) {
+    const comment = pickFromPool(DRAWING_COMMENTS, used);
+    const score = scoreFromEffort(0, true, maxScore);
+    return { comment, score };
+  }
+
+  const text = (answer ?? "").trim();
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  const score = scoreFromEffort(wordCount, false, maxScore);
+
+  if (wordCount === 0) {
+    const comment = pickFromPool(EMPTY_COMMENTS, used);
+    return { comment, score };
+  }
+
+  const snippet = extractSnippet(text);
+  let pool: Array<(s: string) => string>;
+  if (wordCount <= 5) {
+    pool = SNIPPET_COMMENTS_SHORT;
+  } else if (wordCount <= 15) {
+    pool = SNIPPET_COMMENTS_MEDIUM;
+  } else {
+    pool = SNIPPET_COMMENTS_LONG;
+  }
+
+  const template = pickFromPool(pool, used);
+  return { comment: template(snippet), score };
+}

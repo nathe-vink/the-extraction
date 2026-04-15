@@ -171,7 +171,7 @@ async function processRound(
     const fullAnswers = fullState?.currentRound?.answers || round.answers;
 
     // Generate per-player reviews
-    const { reviews } = await generateAnswerReviews(
+    const { reviews, usedFallback } = await generateAnswerReviews(
       { ...state, currentRound: { ...round, answers: fullAnswers } },
       fullAnswers
     );
@@ -190,7 +190,14 @@ async function processRound(
         return `${p?.name}: ${r.score} pts — "${r.comment}"`;
       })
       .join("; ");
-    round.alienReaction = reactionSummary;
+
+    if (usedFallback) {
+      state.aiOffline = true;
+      round.alienReaction =
+        "My review transmitter is experiencing interference from Earth's atmosphere. Pre-recorded assessments incoming.";
+    } else {
+      round.alienReaction = reactionSummary;
+    }
 
     // Update conversation context
     state.conversationContext.push({
