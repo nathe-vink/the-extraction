@@ -1048,13 +1048,34 @@ export default function GamePage() {
         {/* === VOTING === */}
         {phase === "voting" && gameState.currentRound && (
           gameState.currentRound.voteReaction ? (
-            <VoteRevealScreen
-              round={gameState.currentRound}
-              players={gameState.players}
-              drawings={drawings}
-              currentPlayerId={playerId}
-              aiOffline={gameState.aiOffline}
-            />
+            <div className="flex-1 flex flex-col">
+              <VoteRevealScreen
+                round={gameState.currentRound}
+                players={gameState.players}
+                drawings={drawings}
+                currentPlayerId={playerId}
+                aiOffline={gameState.aiOffline}
+              />
+              <div className="flex-shrink-0 text-center pb-4">
+                <button
+                  onClick={handlePoopReady}
+                  className={`relative text-2xl leading-none bg-transparent border-none cursor-pointer select-none hover:scale-110 ${poopFarting ? "poop-fart" : ""}`}
+                  title=""
+                >
+                  💩
+                  {poopFarting && <span className="absolute -top-3 -right-3 text-sm pointer-events-none">💨</span>}
+                  {floatingPoops.map((p) => (
+                    <span
+                      key={p.id}
+                      className="poop-float"
+                      style={{ left: `calc(50% + ${p.x}px)`, bottom: "100%", "--drift": `${p.drift}deg` } as React.CSSProperties}
+                    >
+                      💩
+                    </span>
+                  ))}
+                </button>
+              </div>
+            </div>
           ) : (
             <VotingScreen
               round={gameState.currentRound}

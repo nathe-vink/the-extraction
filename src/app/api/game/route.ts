@@ -292,8 +292,18 @@ async function processRound(
       "My review transmitter is experiencing interference from Earth's atmosphere. Pre-recorded assessments incoming.";
   }
 
-  // Move to reviewing phase — client will cycle through reviews
-  state.phase = "reviewing";
+  // Offline: skip reviewing and go straight to voting
+  if (state.aiOffline) {
+    if (state.currentRound) {
+      state.currentRound.votes = {};
+      state.currentRound.votingDeadline = Date.now() + VOTE_DURATION;
+      state.currentRound.voteReaction = "";
+      state.currentRound.voteBonus = {};
+    }
+    state.phase = "voting";
+  } else {
+    state.phase = "reviewing";
+  }
   await setGame(roomCode, state);
   await broadcast(roomCode, "game-update", state);
 

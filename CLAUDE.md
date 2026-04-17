@@ -30,11 +30,12 @@ git push origin <branch> --force
 **Multiple commits (full branch history from main):**
 ```
 git stash  # if there are unstaged changes
-git rebase main --exec 'git commit --amend --author="nathe-vink <nathe.vink@gmail.com>" --no-edit'
+git rebase refs/remotes/origin/main --exec 'GIT_COMMITTER_NAME="nathe-vink" GIT_COMMITTER_EMAIL="nathe.vink@gmail.com" git commit --amend --author="nathe-vink <nathe.vink@gmail.com>" --no-edit'
 git push origin <branch> --force
 git stash pop  # if stashed
 ```
 
 Note: do NOT use `--reset-author` together with `--author` — they conflict.
+Note: must set both `--author` AND `GIT_COMMITTER_*` env vars — Vercel checks the committer identity too.
 
 Do this on every branch before creating a PR — no exceptions.

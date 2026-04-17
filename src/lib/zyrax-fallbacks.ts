@@ -325,31 +325,31 @@ const CROWD_CHOICE_AWARD: AwardTemplate = {
   id: "crowd-choice",
   name: "Crowd's Choice",
   icon: "👑",
-  getPoints: () => 500,
+  getPoints: () => 750,
 };
 
 // Standard positive awards — always safe, assigned freely
 const STANDARD_AWARDS: AwardTemplate[] = [
-  { id: "zyrax-fave",    name: "ZYRAX's Guilty Pleasure",      icon: "👽", getPoints: () => 400 },
-  { id: "survivor",      name: "Survivor Instinct Award",       icon: "🚀", getPoints: () => 350 },
-  { id: "unhinged",      name: "Most Unhinged Energy",          icon: "🌪️", getPoints: () => 300 },
-  { id: "mysterious",    name: "Mysteriously Compelling",       icon: "🔮", getPoints: () => 275 },
-  { id: "fleet-mention", name: "Honourable Fleet Mention",      icon: "⭐", getPoints: () => 225 },
-  { id: "ambassador",    name: "Vexar-9 Cultural Ambassador",   icon: "🌍", getPoints: () => 175 },
-  { id: "adequate",      name: "Barely Adequate",               icon: "🤷", getPoints: () => 125 },
-  { id: "participation", name: "Participation Recognition",     icon: "📋", getPoints: () => 75  },
-  { id: "consolation",   name: "The Consolation of Existence",  icon: "💫", getPoints: () => 50  },
+  { id: "zyrax-fave",    name: "ZYRAX's Guilty Pleasure",      icon: "👽", getPoints: () => 600 },
+  { id: "survivor",      name: "Survivor Instinct Award",       icon: "🚀", getPoints: () => 550 },
+  { id: "unhinged",      name: "Most Unhinged Energy",          icon: "🌪️", getPoints: () => 475 },
+  { id: "mysterious",    name: "Mysteriously Compelling",       icon: "🔮", getPoints: () => 425 },
+  { id: "fleet-mention", name: "Honourable Fleet Mention",      icon: "⭐", getPoints: () => 350 },
+  { id: "ambassador",    name: "Vexar-9 Cultural Ambassador",   icon: "🌍", getPoints: () => 275 },
+  { id: "adequate",      name: "Barely Adequate",               icon: "🤷", getPoints: () => 200 },
+  { id: "participation", name: "Participation Recognition",     icon: "📋", getPoints: () => 125 },
+  { id: "consolation",   name: "The Consolation of Existence",  icon: "💫", getPoints: () => 75  },
 ];
 
 // Exactly 1 of these is included per round (negative/chaotic outcomes)
 const NEGATIVE_AWARDS: AwardTemplate[] = [
-  { id: "chaos", name: "The Chaos Award",  icon: "🎲", getPoints: () => Math.floor(Math.random() * 701) - 100 },
-  { id: "jinx",  name: "ZYRAX's Jinx",    icon: "💀", getPoints: () => -50 },
+  { id: "chaos", name: "The Chaos Award",  icon: "🎲", getPoints: () => Math.floor(Math.random() * 1001) - 150 },
+  { id: "jinx",  name: "ZYRAX's Jinx",    icon: "💀", getPoints: () => -75 },
 ];
 
 // Exactly 1 of these is included per round (big positive surprise)
 const SPECIAL_POSITIVE_AWARDS: AwardTemplate[] = [
-  { id: "lucky", name: "Cosmic Lucky Draw", icon: "✨", getPoints: () => 450 },
+  { id: "lucky", name: "Cosmic Lucky Draw", icon: "✨", getPoints: () => 700 },
 ];
 
 function shuffle<T>(arr: T[]): T[] {
