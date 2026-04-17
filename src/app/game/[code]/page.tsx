@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { useShare } from "@/hooks/useShare";
 import { getSocketClient, disconnectSocketClient } from "@/lib/socket-client";
-import { GameState, Player, AVATAR_CONFIG, AnswerReview } from "@/lib/types";
+import { GameState, Player, AVATAR_CONFIG, AnswerReview, TribunalState, TribunalReview } from "@/lib/types";
 import { PixelAvatar } from "@/components/PixelAvatar";
 import { PixelAlien } from "@/components/PixelAlien";
 import { PixelShip } from "@/components/PixelShip";
@@ -52,6 +52,14 @@ export default function GamePage() {
   const [selectedVote, setSelectedVote] = useState<string | null>(null);
   const [voteSubmitted, setVoteSubmitted] = useState(false);
   const [votingTimeLeft, setVotingTimeLeft] = useState<number | null>(null);
+  // Tribunal state
+  const [tribunalTarget, setTribunalTarget] = useState<string | null>(null);
+  const [tribunalReason, setTribunalReason] = useState("");
+  const [tribunalSubmitted, setTribunalSubmitted] = useState(false);
+  const [tribunalTimeLeft, setTribunalTimeLeft] = useState<number | null>(null);
+  const [currentTribunalReviewIndex, setCurrentTribunalReviewIndex] = useState(-1);
+  const [accusersRevealed, setAccusersRevealed] = useState(false);
+  const [accusedRevealed, setAccusedRevealed] = useState(false);
 
   const roomRef = useRef<string>('');
   const timerExpiredRef = useRef(false);
@@ -59,6 +67,9 @@ export default function GamePage() {
   const votingTimerExpiredRef = useRef(false);
   const votingDoneRef = useRef(false);
   const previousPhaseRef = useRef<string>("");
+  const tribunalTimerExpiredRef = useRef(false);
+  const tribunalDoneRef = useRef(false);
+  const tribunalRevealInitializedRef = useRef(false);
 
   // Initialize sound on first user gesture
   const initSound = useCallback(() => {
@@ -194,6 +205,22 @@ export default function GamePage() {
             if (gs.phase === "results" || gs.phase === "intro") {
               setIsReady(gs.readyPlayers?.includes(pid) || false);
             }
+            if (gs.phase === "accusing") {
+              const hasReviews = (gs.tribunal?.reviews?.length ?? 0) > 0;
+              if (!hasReviews) {
+                setTribunalTarget(null);
+                setTribunalReason("");
+                setTribunalSubmitted(false);
+                tribunalTimerExpiredRef.current = false;
+                tribunalRevealInitializedRef.current = false;
+              } else if (!tribunalRevealInitializedRef.current) {
+                tribunalRevealInitializedRef.current = true;
+                setCurrentTribunalReviewIndex(-1);
+                setAccusersRevealed(false);
+                setAccusedRevealed(false);
+                tribunalDoneRef.current = false;
+              }
+            }
             // Extract latest alien text for display
             const msgs = gs.messages || [];
             const lastAlien = [...msgs].reverse().find((m: { sender: string }) => m.sender === "alien");
@@ -272,9 +299,9 @@ export default function GamePage() {
       interval = setInterval(poll, ms);
     };
 
-    // Poll faster during processing/voting (Claude is working), slower otherwise
+    // Poll faster during processing/voting/accusing (Claude is working or awaiting reveal)
     const phase = gameState?.phase;
-    if (phase === "processing" || phase === "arrival" || phase === "voting") {
+    if (phase === "processing" || phase === "arrival" || phase === "voting" || phase === "accusing") {
       startPolling(1500);
     } else {
       startPolling(3000);
@@ -307,6 +334,9 @@ export default function GamePage() {
       text = "SCORES ARE IN";
     } else if (phase === "final-results") {
       text = "FINAL RESULTS";
+    } else if (phase === "accusing") {
+      const hasReviews = (gameState?.tribunal?.reviews?.length ?? 0) > 0;
+      text = hasReviews ? "THE VERDICT" : "TRIBUNAL — ACCUSE YOUR RIVALS";
     }
 
     if (text) {
@@ -452,8 +482,8 @@ export default function GamePage() {
   useEffect(() => {
     if (!gameState) return;
     const phase = gameState.phase;
-    // processing has its own poll; result/final-results are client-driven animations
-    if (phase === "processing" || phase === "result" || phase === "final-results") return;
+    // processing has its own poll; result/final-results/accusing are client-driven
+    if (phase === "processing" || phase === "result" || phase === "final-results" || phase === "accusing") return;
 
     const pid = playerId;
 
@@ -613,6 +643,89 @@ export default function GamePage() {
     }
   }, [gameState?.phase]);
 
+  // Tribunal accusation timer
+  useEffect(() => {
+    const isSubmitMode = gameState?.phase === "accusing" && (gameState?.tribunal?.reviews?.length ?? 0) === 0;
+    if (!gameState?.roundDeadline || !isSubmitMode) {
+      setTribunalTimeLeft(null);
+      return;
+    }
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((gameState.roundDeadline! - Date.now()) / 1000));
+      setTribunalTimeLeft(remaining);
+      if (remaining <= 0 && !tribunalTimerExpiredRef.current) {
+        tribunalTimerExpiredRef.current = true;
+        fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "tribunal-timer-expire", roomCode }),
+        });
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [gameState?.roundDeadline, gameState?.phase, gameState?.tribunal?.reviews?.length, roomCode]);
+
+  // Tribunal reveal: start cycling after 1.2s when reveal mode is detected
+  useEffect(() => {
+    const isRevealMode = gameState?.phase === "accusing" && (gameState?.tribunal?.reviews?.length ?? 0) > 0;
+    if (!isRevealMode) return;
+    const startTimer = setTimeout(() => setCurrentTribunalReviewIndex(0), 1200);
+    return () => clearTimeout(startTimer);
+  }, [gameState?.phase, gameState?.tribunal?.reviews?.length]);
+
+  // Tribunal reveal: cycle through reviews, then reveal accusers, then accused
+  useEffect(() => {
+    const isRevealMode = gameState?.phase === "accusing" && (gameState?.tribunal?.reviews?.length ?? 0) > 0;
+    if (!isRevealMode || currentTribunalReviewIndex < 0) return;
+    const reviews = gameState!.tribunal!.reviews;
+
+    if (currentTribunalReviewIndex < reviews.length) {
+      const timer = setTimeout(() => setCurrentTribunalReviewIndex((i) => i + 1), 9000);
+      return () => clearTimeout(timer);
+    }
+    if (!accusersRevealed) {
+      const timer = setTimeout(() => setAccusersRevealed(true), 1000);
+      return () => clearTimeout(timer);
+    }
+    if (!accusedRevealed) {
+      const timer = setTimeout(() => setAccusedRevealed(true), 3000);
+      return () => clearTimeout(timer);
+    }
+    if (!tribunalDoneRef.current) {
+      const timer = setTimeout(() => {
+        if (!tribunalDoneRef.current) {
+          tribunalDoneRef.current = true;
+          fetch("/api/game", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "tribunal-done", roomCode }),
+          });
+        }
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [currentTribunalReviewIndex, gameState?.phase, gameState?.tribunal?.reviews, accusersRevealed, accusedRevealed, roomCode]);
+
+  // Safety escape: empty reviews in reveal mode
+  useEffect(() => {
+    const isRevealMode = gameState?.phase === "accusing" && (gameState?.tribunal?.reviews?.length ?? 0) > 0;
+    if (!isRevealMode || (gameState?.tribunal?.reviews?.length ?? 0) > 0) return;
+    if (tribunalDoneRef.current) return;
+    const timer = setTimeout(() => {
+      if (!tribunalDoneRef.current) {
+        tribunalDoneRef.current = true;
+        fetch("/api/game", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "tribunal-done", roomCode }),
+        });
+      }
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [gameState?.phase, gameState?.tribunal?.reviews?.length, roomCode]);
+
   const callAPI = useCallback(
     async (action: string, extraData = {}) => {
       try {
@@ -696,6 +809,8 @@ export default function GamePage() {
   const timerPercent = timeLeft !== null ? Math.max(0, (timeLeft / 60) * 100) : 0;
   const timerColor = timeLeft !== null && timeLeft <= 10 ? "var(--neon-pink)" : "var(--neon-green)";
   const isDrawingRound = gameState.currentRound?.roundType === "drawing";
+  const isAccusingRevealMode = phase === "accusing" && (gameState.tribunal?.reviews?.length ?? 0) > 0;
+  const isAccusingSubmitMode = phase === "accusing" && !isAccusingRevealMode;
 
   return (
     <div className="flex flex-col h-screen max-h-screen overflow-hidden">
@@ -726,10 +841,24 @@ export default function GamePage() {
         </div>
       </header>
 
-      {/* Timer bar (only during active questioning) */}
+      {/* Timer bar (questioning) */}
       {phase === "questioning" && timeLeft !== null && (
         <div className="flex-shrink-0 h-1 bg-space-mid/50">
           <div className="h-full transition-all duration-1000 ease-linear" style={{ width: `${timerPercent}%`, backgroundColor: timerColor, boxShadow: `0 0 8px ${timerColor}` }} />
+        </div>
+      )}
+
+      {/* Timer bar (tribunal accusation) */}
+      {isAccusingSubmitMode && tribunalTimeLeft !== null && (
+        <div className="flex-shrink-0 h-1 bg-space-mid/50">
+          <div
+            className="h-full transition-all duration-1000 ease-linear"
+            style={{
+              width: `${Math.max(0, (tribunalTimeLeft / 45) * 100)}%`,
+              backgroundColor: "var(--neon-pink)",
+              boxShadow: "0 0 8px var(--neon-pink)",
+            }}
+          />
         </div>
       )}
 
@@ -887,13 +1016,33 @@ export default function GamePage() {
 
         {/* === REVIEWING — One answer at a time, full screen === */}
         {phase === "reviewing" && gameState.currentRound && (
-          <ReviewScreen
-            round={gameState.currentRound}
-            players={gameState.players}
-            currentReviewIndex={currentReviewIndex}
-            currentPlayerId={playerId}
-            drawings={drawings}
-          />
+          <>
+            {/* Host-only offline mode badge */}
+            {gameState.aiOffline && isHost && (
+              <div className="w-full flex justify-center px-4 pt-2">
+                <span className="font-pixel text-[8px] neon-text-yellow border border-yellow-400/30 px-2 py-1 rounded">
+                  OFFLINE MODE
+                </span>
+              </div>
+            )}
+            {/* In-character ZYRAX "pre-recorded" message — shown only on first review */}
+            {gameState.aiOffline && currentReviewIndex === 0 && gameState.currentRound.alienReaction && (
+              <div className="px-4 pt-2 w-full max-w-md mx-auto">
+                <div className="alien-bubble p-3">
+                  <p className="text-gray-300 text-xs leading-relaxed italic">
+                    {gameState.currentRound.alienReaction}
+                  </p>
+                </div>
+              </div>
+            )}
+            <ReviewScreen
+              round={gameState.currentRound}
+              players={gameState.players}
+              currentReviewIndex={currentReviewIndex}
+              currentPlayerId={playerId}
+              drawings={drawings}
+            />
+          </>
         )}
 
         {/* === VOTING === */}
@@ -904,6 +1053,7 @@ export default function GamePage() {
               players={gameState.players}
               drawings={drawings}
               currentPlayerId={playerId}
+              aiOffline={gameState.aiOffline}
             />
           ) : (
             <VotingScreen
@@ -963,6 +1113,41 @@ export default function GamePage() {
           </div>
         )}
 
+        {/* === ACCUSING — Tribunal submission mode === */}
+        {isAccusingSubmitMode && (
+          <AccusingScreen
+            players={gameState.players}
+            currentPlayerId={playerId}
+            timeLeft={tribunalTimeLeft}
+            submitted={tribunalSubmitted}
+            selectedTarget={tribunalTarget}
+            reason={tribunalReason}
+            onTargetSelect={setTribunalTarget}
+            onReasonChange={setTribunalReason}
+            onSubmit={() => {
+              if (!tribunalTarget || !tribunalReason.trim()) return;
+              setTribunalSubmitted(true);
+              fetch("/api/game", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "submit-accusation", roomCode, playerId, targetId: tribunalTarget, reason: tribunalReason.trim() }),
+              });
+            }}
+          />
+        )}
+
+        {/* === ACCUSING — Tribunal reveal mode === */}
+        {isAccusingRevealMode && gameState.tribunal && (
+          <TribunalRevealScreen
+            tribunal={gameState.tribunal}
+            players={gameState.players}
+            currentPlayerId={playerId}
+            currentReviewIndex={currentTribunalReviewIndex}
+            accusersRevealed={accusersRevealed}
+            accusedRevealed={accusedRevealed}
+          />
+        )}
+
         {/* === FINAL RESULTS === */}
         {phase === "final-results" && (
           <div className="flex-1 flex flex-col items-center justify-center p-4">
@@ -972,6 +1157,7 @@ export default function GamePage() {
               winnerId={gameState.winnerId}
               currentPlayerId={playerId}
               sendoffText={introText}
+              tribunal={gameState.tribunal}
             />
           </div>
         )}
@@ -1194,6 +1380,7 @@ function VoteRevealScreen({
   players,
   drawings,
   currentPlayerId,
+  aiOffline,
 }: {
   round: {
     question: string;
@@ -1202,10 +1389,12 @@ function VoteRevealScreen({
     votes: Record<string, string>;
     voteReaction: string;
     voteBonus: Record<string, number>;
+    awards?: Record<string, { id: string; name: string; icon: string; points: number }>;
   };
   players: Player[];
   drawings: Record<string, string>;
   currentPlayerId: string;
+  aiOffline?: boolean;
 }) {
   const isDrawing = round.roundType === "drawing";
 
@@ -1216,20 +1405,23 @@ function VoteRevealScreen({
   }
   const maxVotes = Math.max(0, ...Object.values(voteCounts));
 
-  // Sort by vote count descending
+  // Sort by vote count descending (normal) or by award points descending (offline)
   const rankedEntries = Object.entries(round.answers)
     .map(([pid, answer]) => ({
       pid,
       answer,
       votes: voteCounts[pid] || 0,
       bonus: round.voteBonus[pid] || 0,
+      award: round.awards?.[pid],
       player: players.find((p) => p.id === pid),
     }))
-    .sort((a, b) => b.votes - a.votes);
+    .sort((a, b) => aiOffline ? b.bonus - a.bonus : b.votes - a.votes);
 
   return (
     <div className="flex-1 flex flex-col p-4 gap-4 overflow-y-auto animate-fade-in">
-      <p className="font-pixel text-[10px] neon-text-pink text-center flex-shrink-0">THE CROWD HAS SPOKEN</p>
+      <p className="font-pixel text-[10px] neon-text-pink text-center flex-shrink-0">
+        {aiOffline ? "AWARDS CEREMONY" : "THE CROWD HAS SPOKEN"}
+      </p>
 
       {/* ZYRAX reaction */}
       <div className="alien-bubble p-3 flex-shrink-0">
@@ -1242,21 +1434,22 @@ function VoteRevealScreen({
         </p>
       </div>
 
-      {/* Ranked answers with vote counts */}
+      {/* Ranked answers */}
       <div className="flex flex-col gap-3">
-        {rankedEntries.map(({ pid, answer, votes, bonus, player }, i) => {
-          const isWinner = votes === maxVotes && maxVotes > 0;
+        {rankedEntries.map(({ pid, answer, votes, bonus, award, player }, i) => {
+          const isVoteWinner = votes === maxVotes && maxVotes > 0;
+          const isCrowdChoice = award?.id === "crowd-choice";
+          const isHighlight = aiOffline ? isCrowdChoice : (isVoteWinner && i === 0);
           const isYou = pid === currentPlayerId;
           const drawingData = drawings[pid];
           const avatarColor = AVATAR_CONFIG[player?.avatar || "hillbilly"]?.color || "#39ff14";
+          const isChaos = award?.id === "chaos" || award?.id === "jinx";
 
           return (
             <div
               key={pid}
               className={`rounded-xl p-3 border animate-slide-up ${
-                isWinner && i === 0
-                  ? "border-neon-pink/60 bg-neon-pink/10"
-                  : "border-white/10 bg-white/5"
+                isHighlight ? "border-neon-pink/60 bg-neon-pink/10" : "border-white/10 bg-white/5"
               }`}
               style={{ animationDelay: `${i * 200}ms` }}
             >
@@ -1265,32 +1458,55 @@ function VoteRevealScreen({
                 <span className={`text-sm flex-1 font-semibold ${isYou ? "text-white" : "text-gray-300"}`}>
                   {player?.name}{isYou ? " (you)" : ""}
                 </span>
-                {isWinner && i === 0 && <span className="text-lg">👑</span>}
-                <span className="font-pixel text-xs" style={{ color: avatarColor }}>
-                  {votes} vote{votes !== 1 ? "s" : ""}
-                </span>
-                {bonus > 0 && (
-                  <span className="font-pixel text-xs neon-text-yellow">+{bonus}</span>
+
+                {/* Offline: show award badge */}
+                {aiOffline && award && (
+                  <span className={`font-pixel text-[9px] px-1.5 py-0.5 rounded border ${
+                    isChaos ? "border-neon-pink/50 text-pink-300" : "border-white/20 text-gray-300"
+                  }`}>
+                    {award.icon} {award.name}
+                  </span>
+                )}
+
+                {/* Normal: show vote count + crown */}
+                {!aiOffline && isVoteWinner && i === 0 && <span className="text-lg">👑</span>}
+                {!aiOffline && (
+                  <span className="font-pixel text-xs" style={{ color: avatarColor }}>
+                    {votes} vote{votes !== 1 ? "s" : ""}
+                  </span>
+                )}
+
+                {/* Points awarded (both modes) */}
+                {bonus !== 0 && (
+                  <span className={`font-pixel text-xs ${
+                    bonus < 0 ? "text-red-400" : "neon-text-yellow"
+                  }`}>
+                    {bonus > 0 ? "+" : ""}{bonus}
+                  </span>
                 )}
               </div>
+
               {isDrawing && drawingData ? (
                 /* eslint-disable-next-line @next/next/no-img-element */
                 <img src={drawingData} alt={`${player?.name}'s drawing`} className="rounded max-w-[140px]" style={{ imageRendering: "pixelated" }} />
               ) : (
                 <p className="text-gray-400 text-xs pl-9">{answer === "[drawing]" ? "🎨 [Drawing]" : answer}</p>
               )}
-              {/* Vote bar */}
-              <div className="mt-2 h-1.5 bg-white/10 rounded-full overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all duration-1000 ease-out"
-                  style={{
-                    width: maxVotes > 0 ? `${(votes / maxVotes) * 100}%` : "0%",
-                    backgroundColor: avatarColor,
-                    boxShadow: `0 0 6px ${avatarColor}`,
-                    transitionDelay: `${i * 300 + 400}ms`,
-                  }}
-                />
-              </div>
+
+              {/* Vote bar (normal mode only) */}
+              {!aiOffline && (
+                <div className="mt-2 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-1000 ease-out"
+                    style={{
+                      width: maxVotes > 0 ? `${(votes / maxVotes) * 100}%` : "0%",
+                      backgroundColor: avatarColor,
+                      boxShadow: `0 0 6px ${avatarColor}`,
+                      transitionDelay: `${i * 300 + 400}ms`,
+                    }}
+                  />
+                </div>
+              )}
             </div>
           );
         })}
@@ -1348,18 +1564,223 @@ function ResultsLeaderboard({
   );
 }
 
+function AccusingScreen({
+  players,
+  currentPlayerId,
+  timeLeft,
+  submitted,
+  selectedTarget,
+  reason,
+  onTargetSelect,
+  onReasonChange,
+  onSubmit,
+}: {
+  players: Player[];
+  currentPlayerId: string;
+  timeLeft: number | null;
+  submitted: boolean;
+  selectedTarget: string | null;
+  reason: string;
+  onTargetSelect: (id: string) => void;
+  onReasonChange: (val: string) => void;
+  onSubmit: () => void;
+}) {
+  const timerColor = timeLeft !== null && timeLeft <= 10 ? "var(--neon-pink)" : "var(--neon-green)";
+  const otherPlayers = players.filter((p) => p.id !== currentPlayerId);
+
+  if (submitted) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-6 gap-4">
+        <p className="font-pixel text-xs neon-text-pink text-center">ACCUSATION FILED</p>
+        <div className="text-4xl mb-2">⚖️</div>
+        <p className="text-gray-400 text-sm text-center">ZYRAX is reviewing all grievances...</p>
+        <div className="typing-indicator justify-center mt-2"><span /><span /><span /></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex flex-col p-4 gap-4 overflow-y-auto">
+      <div className="flex-shrink-0 text-center pt-2">
+        <p className="font-pixel text-[10px] neon-text-pink mb-1">TRIBUNAL</p>
+        <p className="text-gray-300 text-sm">Who should be left behind? Accuse a rival.</p>
+        {timeLeft !== null && (
+          <p className="font-pixel text-xl mt-2" style={{ color: timerColor }}>{timeLeft}</p>
+        )}
+      </div>
+      <div className="flex-shrink-0">
+        <p className="font-pixel text-[9px] text-gray-500 mb-2">CHOOSE YOUR TARGET</p>
+        <div className="grid grid-cols-2 gap-2">
+          {otherPlayers.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => onTargetSelect(p.id)}
+              className={`flex items-center gap-2 p-3 rounded-xl border transition-all ${
+                selectedTarget === p.id
+                  ? "border-pink-400/80 bg-pink-400/10 shadow-[0_0_10px_rgba(255,20,147,0.4)]"
+                  : "border-white/10 bg-white/5 hover:border-white/30"
+              }`}
+            >
+              <PixelAvatar type={p.avatar} size={28} />
+              <span className="text-sm text-gray-200 truncate">{p.name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex-1 flex flex-col min-h-0">
+        <p className="font-pixel text-[9px] text-gray-500 mb-2">WHY SHOULD THEY BE LEFT BEHIND?</p>
+        <textarea
+          value={reason}
+          onChange={(e) => onReasonChange(e.target.value)}
+          placeholder="Make your case..."
+          maxLength={500}
+          rows={4}
+          className="flex-1 resize-none w-full"
+          disabled={!selectedTarget}
+        />
+      </div>
+      <button
+        onClick={onSubmit}
+        disabled={!selectedTarget || !reason.trim()}
+        className="btn-neon btn-neon-pink w-full py-3 text-xs flex-shrink-0"
+      >
+        File Accusation
+      </button>
+    </div>
+  );
+}
+
+function TribunalRevealScreen({
+  tribunal,
+  players,
+  currentPlayerId,
+  currentReviewIndex,
+  accusersRevealed,
+  accusedRevealed,
+}: {
+  tribunal: TribunalState;
+  players: Player[];
+  currentPlayerId: string;
+  currentReviewIndex: number;
+  accusersRevealed: boolean;
+  accusedRevealed: boolean;
+}) {
+  const reviews: TribunalReview[] = tribunal.reviews || [];
+
+  if (currentReviewIndex < 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="typing-indicator"><span /><span /><span /></div>
+      </div>
+    );
+  }
+
+  if (currentReviewIndex < reviews.length) {
+    const review = reviews[currentReviewIndex];
+    const target = players.find((p) => p.id === review.targetId);
+    const isYouTarget = review.targetId === currentPlayerId;
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-6 animate-fade-in" key={currentReviewIndex}>
+        <div className="w-full max-w-md mb-6">
+          <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-pink-400 rounded-full"
+              style={{ width: "0%", transition: "width 9s linear", boxShadow: "0 0 8px rgba(255,20,147,0.6)" }}
+              ref={(el) => { if (el) requestAnimationFrame(() => { el.style.width = "100%"; }); }}
+            />
+          </div>
+          <p className="font-pixel text-[8px] text-gray-500 mt-1 text-right">{currentReviewIndex + 1} / {reviews.length}</p>
+        </div>
+        <p className="font-pixel text-[9px] neon-text-pink mb-3">ACCUSED</p>
+        <div className="flex items-center gap-3 mb-4">
+          <PixelAvatar type={target?.avatar || "hillbilly"} size={48} animated />
+          <p className="text-white font-semibold text-lg">{target?.name}{isYouTarget ? " (you)" : ""}</p>
+        </div>
+        <div className="player-bubble p-4 mb-4 max-w-md w-full">
+          <p className="text-gray-200 text-sm italic">&ldquo;{review.reason}&rdquo;</p>
+          <p className="font-pixel text-[8px] text-gray-500 mt-2">— Anonymous</p>
+        </div>
+        <div className="alien-bubble p-4 max-w-md w-full mb-4">
+          <p className="text-gray-200 text-sm leading-relaxed">
+            <TypewriterText text={review.comment} speed={20} onWordSound={() => soundEngine.playTypewriterTick()} />
+          </p>
+        </div>
+        <div className="text-center animate-slide-up" style={{ animationDelay: "500ms" }}>
+          <p className="font-pixel text-2xl neon-text-pink">+{review.score}</p>
+          <p className="text-gray-500 text-xs">/ 500 accusation score</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!accusersRevealed) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-6 gap-4 animate-fade-in">
+        <div className="typing-indicator justify-center mb-4"><span /><span /><span /></div>
+        <p className="font-pixel text-xs neon-text-pink animate-pulse">REVEALING ACCUSERS...</p>
+      </div>
+    );
+  }
+
+  if (!accusedRevealed) {
+    const byTarget: Record<string, { target: Player | undefined; items: { accuser: Player | undefined; reason: string }[] }> = {};
+    for (const r of reviews) {
+      if (!byTarget[r.targetId]) byTarget[r.targetId] = { target: players.find((p) => p.id === r.targetId), items: [] };
+      byTarget[r.targetId].items.push({ accuser: players.find((p) => p.id === r.accuserId), reason: r.reason });
+    }
+    return (
+      <div className="flex-1 flex flex-col p-4 gap-4 overflow-y-auto animate-fade-in">
+        <p className="font-pixel text-xs neon-text-pink text-center flex-shrink-0">THE ACCUSERS REVEALED</p>
+        {Object.values(byTarget).map(({ target, items }, i) => (
+          <div key={target?.id || i} className="rounded-xl p-3 border border-white/10 bg-white/5 animate-slide-up" style={{ animationDelay: `${i * 200}ms` }}>
+            <div className="flex items-center gap-2 mb-2">
+              {target && <PixelAvatar type={target.avatar} size={28} />}
+              <span className="text-sm font-semibold text-gray-200">{target?.name}</span>
+            </div>
+            {items.map((item, j) => (
+              <div key={j} className="ml-9 mb-1">
+                <span className="font-pixel text-[8px] text-gray-400">{item.accuser?.name}: </span>
+                <span className="text-xs text-gray-300 italic">&ldquo;{item.reason}&rdquo;</span>
+              </div>
+            ))}
+          </div>
+        ))}
+        <p className="font-pixel text-[10px] text-gray-500 text-center animate-pulse mt-2">CALCULATING CONDEMNATION...</p>
+      </div>
+    );
+  }
+
+  const accused = players.find((p) => p.id === tribunal.accusedPlayerId);
+  const isYouAccused = tribunal.accusedPlayerId === currentPlayerId;
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center p-6 gap-6 animate-fade-in">
+      <p className="font-pixel text-xs neon-text-pink text-center animate-pulse">ACCUSED</p>
+      <div className="p-6 rounded-xl border-2 border-pink-400/60 bg-pink-400/10 text-center">
+        {accused && <PixelAvatar type={accused.avatar} size={64} animated />}
+        <p className="text-white font-semibold text-xl mt-3">{accused?.name}</p>
+        {isYouAccused && <p className="font-pixel text-[10px] neon-text-yellow mt-1">THAT&apos;S YOU</p>}
+        <p className="font-pixel text-2xl neon-text-pink mt-4">−600</p>
+        <p className="text-gray-400 text-xs mt-1">pts deducted by the tribunal</p>
+      </div>
+      <p className="text-gray-500 text-xs text-center font-mono">Proceeding to final results...</p>
+    </div>
+  );
+}
+
 function FinalResults({
   players,
   scores,
   winnerId,
   currentPlayerId,
   sendoffText,
+  tribunal,
 }: {
   players: Player[];
   scores: Record<string, number>;
   winnerId: string | null;
   currentPlayerId: string;
   sendoffText: string;
+  tribunal?: TribunalState;
 }) {
   const sorted = [...players].sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0));
   const maxScore = Math.max(...Object.values(scores), 1);
@@ -1391,6 +1812,9 @@ function FinalResults({
               <div className="flex-1">
                 <p className={`font-semibold ${isWinner ? "neon-text-green" : "text-white"}`}>{player.name}{isYou ? " (you)" : ""}</p>
                 {isWinner && <p className="font-pixel text-[10px] neon-text-yellow">EXTRACTED</p>}
+                {tribunal?.accusedPlayerId === player.id && (
+                  <p className="font-pixel text-[9px] text-pink-400">⚖️ ACCUSED −600</p>
+                )}
               </div>
               <span className="font-pixel text-lg text-white">{total}</span>
             </div>

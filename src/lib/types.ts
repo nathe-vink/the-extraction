@@ -39,6 +39,7 @@ export type GamePhase =
   | "reviewing"
   | "voting"
   | "results"
+  | "accusing"       // tribunal: submit mode (empty reviews) → reveal mode (reviews populated)
   | "final-results"
   | "result";
 
@@ -46,6 +47,34 @@ export interface AnswerReview {
   playerId: string;
   comment: string;
   score: number;
+}
+
+export interface TribunalAccusation {
+  accuserId: string;
+  targetId: string;
+  reason: string;
+}
+
+export interface TribunalReview {
+  accuserId: string;
+  targetId: string;
+  reason: string;
+  comment: string;
+  score: number; // 0–500
+}
+
+export interface TribunalState {
+  accusations: TribunalAccusation[];
+  reviews: TribunalReview[];
+  accusedPlayerId: string | null;
+  penaltyApplied: boolean;
+}
+
+export interface OfflineAward {
+  id: string;
+  name: string;
+  icon: string;
+  points: number;
 }
 
 export interface GameMessage {
@@ -67,6 +96,7 @@ export interface RoundState {
   votingDeadline: number | null;
   voteReaction: string;
   voteBonus: Record<string, number>;   // playerId → bonus awarded (200 or 100)
+  awards?: Record<string, OfflineAward>; // playerId → offline mode award
 }
 
 export interface GameState {
@@ -84,6 +114,8 @@ export interface GameState {
   readyPlayers: string[];
   questionQueue: Record<number, string>;
   cachedSendoff: string | null;
+  aiOffline?: boolean;
+  tribunal?: TribunalState;
 }
 
 export interface PusherGameEvent {
@@ -101,7 +133,10 @@ export type GameAction =
   | { action: "ready"; roomCode: string; playerId: string }
   | { action: "get-state"; roomCode: string }
   | { action: "submit-vote"; roomCode: string; playerId: string; votedForId: string }
-  | { action: "vote-timer-expire"; roomCode: string };
+  | { action: "vote-timer-expire"; roomCode: string }
+  | { action: "submit-accusation"; roomCode: string; playerId: string; targetId: string; reason: string }
+  | { action: "tribunal-timer-expire"; roomCode: string }
+  | { action: "tribunal-done"; roomCode: string };
 
 export interface GameResponse {
   success: boolean;

@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { GameState, Player, AnswerReview } from "./types";
+import { GameState, Player, AnswerReview, TribunalAccusation, TribunalReview } from "./types";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -71,9 +71,18 @@ function buildRoundHistory(state: GameState): string {
     .join("\n\n");
 }
 
-import { FALLBACK_REVIEW_COMMENTS } from "./zyrax-fallbacks";
+import { FALLBACK_REVIEW_COMMENTS, generateFallbackReview } from "./zyrax-fallbacks";
 
-const AI_TIMEOUT = 30000; // 30 seconds
+const AI_TIMEOUT = 15000; // 15 seconds
+
+// Set to true once a credit/billing error is detected — skips all further API calls
+let aiDisabled = false;
+
+function isCreditError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes("credit") || msg.includes("balance") || msg.includes("billing") || msg.includes("quota");
+}
 
 function pickFallbackComment(used: Set<number>): string {
   const available = FALLBACK_REVIEW_COMMENTS
@@ -134,6 +143,7 @@ Respond in JSON: { "introduction": "..." }`,
       return fallback;
     }
   } catch (err) {
+    if (isCreditError(err)) aiDisabled = true;
     console.error("Error generating introduction:", err);
     return fallback;
   }
@@ -254,6 +264,7 @@ Respond in JSON: { "question": "..." }`;
       return fallback;
     }
   } catch (err) {
+    if (isCreditError(err)) aiDisabled = true;
     console.error("Error generating question:", err);
     return fallback;
   }
@@ -264,6 +275,7 @@ export async function generateAnswerReviews(
   answers: Record<string, string>
 ): Promise<{
   reviews: AnswerReview[];
+  usedFallback: boolean;
 }> {
   const roundNum = state.roundHistory.length + 1;
   const isFinalPlea = state.currentRound?.roundType === "final-plea";
@@ -345,39 +357,71 @@ Respond in JSON:
   const usedCommentIndices = new Set<number>();
   const fallbackReviews: AnswerReview[] = state.players.map((player) => ({
     playerId: player.id,
-    comment: pickFallbackComment(usedCommentIndices),
-    score: Math.floor(Math.random() * (maxScore * 0.4)) + Math.floor(maxScore * 0.3),
+    comment: "",
+    score: 0,
   }));
+  const buildFallbackReviews = (): AnswerReview[] =>
+    state.players.map((player) => {
+      const { comment, score } = generateFallbackReview(
+        answers[player.id],
+        isDrawing,
+        usedCommentIndices
+      );
+      return { playerId: player.id, comment, score };
+    });
 
-  try {
-    const response = await withTimeout(
-      client.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 800,
-        system: ALIEN_SYSTEM_PROMPT,
-        messages,
-      }),
-      AI_TIMEOUT,
-      null
-    );
-
-    if (!response) return { reviews: fallbackReviews };
-    const text = response.content[0].type === "text" ? response.content[0].text : "";
-    try {
-      const parsed = JSON.parse(text);
-      return { reviews: parsed.reviews };
-    } catch {
-      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[1]);
-        return { reviews: parsed.reviews };
-      }
-      return { reviews: fallbackReviews };
-    }
-  } catch (err) {
-    console.error("Error generating answer reviews:", err);
-    return { reviews: fallbackReviews };
+  // Skip API entirely if credits already known to be exhausted
+  if (aiDisabled) {
+    return { reviews: buildFallbackReviews(), usedFallback: true };
   }
+
+  // Attempt the API call with one retry for transient errors.
+  // Credit errors skip the retry and disable AI for the rest of the session.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await withTimeout(
+        client.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 800,
+          system: ALIEN_SYSTEM_PROMPT,
+          messages,
+        }),
+        AI_TIMEOUT,
+        null
+      );
+
+      if (!response) {
+        // Timed out — retry once, then fall back
+        continue;
+      }
+
+      const text = response.content[0].type === "text" ? response.content[0].text : "";
+      try {
+        const parsed = JSON.parse(text);
+        return { reviews: parsed.reviews, usedFallback: false };
+      } catch {
+        const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[1]);
+          return { reviews: parsed.reviews, usedFallback: false };
+        }
+        // Malformed JSON — retry once, then fall back
+        continue;
+      }
+    } catch (err) {
+      if (isCreditError(err)) {
+        console.error("AI credits exhausted — disabling AI for this session");
+        aiDisabled = true;
+        return { reviews: buildFallbackReviews(), usedFallback: true };
+      }
+      console.error(`Error generating answer reviews (attempt ${attempt + 1}):`, err);
+      // Non-credit error — retry once
+    }
+  }
+
+  // Both attempts failed
+  console.error("generateAnswerReviews: both attempts failed, using fallback");
+  return { reviews: buildFallbackReviews(), usedFallback: true };
 }
 
 export async function generateVoteReaction(
@@ -416,6 +460,7 @@ export async function generateVoteReaction(
       return fallback;
     }
   } catch (err) {
+    if (isCreditError(err)) aiDisabled = true;
     console.error("Error generating vote reaction:", err);
     return fallback;
   }
@@ -469,7 +514,156 @@ Deliver a quick, panicked sendoff. The fleet is HERE. You need to grab ${winner?
       return fallback;
     }
   } catch (err) {
+    if (isCreditError(err)) aiDisabled = true;
     console.error("Error generating sendoff:", err);
     return fallback;
   }
+}
+
+const TRIBUNAL_RAGE_COMMENTS = [
+  "I DON'T KNOW WHO THIS IS. SOMEONE IS GOING DOWN ANYWAY.",
+  "The paperwork is wrong but SOMEONE is staying behind.",
+  "I can't find this creature in my records — PICK ONE.",
+  "My scanner is broken. You're all guilty. Especially you.",
+];
+
+function resolvePlayerId(raw: string, players: Player[]): { id: string; raged: boolean } {
+  if (players.find((p) => p.id === raw)) return { id: raw, raged: false };
+  const lower = raw.toLowerCase().trim();
+  const match = players.find(
+    (p) => p.name.toLowerCase().includes(lower) || lower.includes(p.name.toLowerCase())
+  );
+  if (match) return { id: match.id, raged: false };
+  const random = players[Math.floor(Math.random() * players.length)];
+  return { id: random.id, raged: true };
+}
+
+export async function generateTribunalReviews(
+  state: GameState,
+  accusations: TribunalAccusation[]
+): Promise<{ reviews: TribunalReview[]; accusedPlayerId: string; usedFallback: boolean }> {
+  const playerContext = state.players.map((p) => `"${p.name}" (id: ${p.id})`).join(", ");
+  const accusationList = accusations
+    .map((a, i) => {
+      const target = state.players.find((p) => p.id === a.targetId);
+      return `${i + 1}. Against "${target?.name || a.targetId}" (id: ${a.targetId}): "${a.reason}" [accuserId: ${a.accuserId}]`;
+    })
+    .join("\n");
+  const scoreSummary = Object.entries(state.scores)
+    .map(([pid, score]) => {
+      const player = state.players.find((p) => p.id === pid);
+      return `${player?.name}: ${score} pts`;
+    })
+    .join(", ");
+
+  const prompt = `The Tribunal has convened. After ${state.roundHistory.length} rounds, the humans have turned on each other.
+
+Players: ${playerContext}
+
+Game performance:
+${buildRoundHistory(state)}
+
+Current scores: ${scoreSummary}
+
+Anonymous accusations:
+${accusationList}
+
+Score each accusation 0-500 on: how damning the case is (does game history support it?), entertainment value, and your own sardonic judgment. Give a 1-2 sentence in-character comment for each — be varied, reference actual game performance when relevant.
+
+CRITICAL: Use ONLY the exact player IDs listed above for accuserId and targetId.
+
+Respond in JSON:
+{
+  "reviews": [
+    { "accuserId": "<exact id>", "targetId": "<exact id>", "comment": "ZYRAX reaction", "score": <0-500> }
+  ]
+}`;
+
+  const determinAccused = (reviews: TribunalReview[]): string => {
+    const totals: Record<string, number> = {};
+    for (const r of reviews) totals[r.targetId] = (totals[r.targetId] || 0) + r.score;
+    const max = Math.max(...Object.values(totals));
+    const tied = Object.entries(totals).filter(([, v]) => v === max).map(([id]) => id);
+    return tied[Math.floor(Math.random() * tied.length)];
+  };
+
+  const buildFallbackReviews = (): { reviews: TribunalReview[]; accusedPlayerId: string } => {
+    const usedCommentIndices = new Set<number>();
+    const reviews: TribunalReview[] = accusations.map((acc) => ({
+      ...acc,
+      comment: pickFallbackComment(usedCommentIndices),
+      score: Math.floor(Math.random() * 401) + 50,
+    }));
+    return { reviews, accusedPlayerId: determinAccused(reviews) };
+  };
+
+  if (aiDisabled) {
+    const { reviews, accusedPlayerId } = buildFallbackReviews();
+    return { reviews, accusedPlayerId, usedFallback: true };
+  }
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await withTimeout(
+        client.messages.create({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 800,
+          system: ALIEN_SYSTEM_PROMPT,
+          messages: [
+            ...state.conversationContext.map((m) => ({
+              role: m.role as "user" | "assistant",
+              content: m.content,
+            })),
+            { role: "user", content: prompt },
+          ],
+        }),
+        AI_TIMEOUT,
+        null
+      );
+
+      if (!response) continue;
+
+      const text = response.content[0].type === "text" ? response.content[0].text : "";
+      let parsed: { reviews: Array<{ accuserId: string; targetId: string; comment: string; score: number }> } | null = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+          try { parsed = JSON.parse(jsonMatch[1]); } catch { /* fall through */ }
+        }
+      }
+
+      if (!parsed?.reviews?.length) continue;
+
+      const resolvedReviews: TribunalReview[] = parsed.reviews.map((r) => {
+        const { id: resolvedTargetId, raged: targetRaged } = resolvePlayerId(r.targetId, state.players);
+        const { id: resolvedAccuserId } = resolvePlayerId(r.accuserId, state.players);
+        const originalAccusation = accusations.find((a) => a.accuserId === resolvedAccuserId);
+        return {
+          accuserId: resolvedAccuserId,
+          targetId: resolvedTargetId,
+          reason: originalAccusation?.reason || "",
+          comment: targetRaged
+            ? TRIBUNAL_RAGE_COMMENTS[Math.floor(Math.random() * TRIBUNAL_RAGE_COMMENTS.length)]
+            : r.comment,
+          score: Math.min(500, Math.max(0, r.score)),
+        };
+      });
+
+      return { reviews: resolvedReviews, accusedPlayerId: determinAccused(resolvedReviews), usedFallback: false };
+    } catch (err) {
+      if (isCreditError(err)) {
+        console.error("AI credits exhausted — disabling AI for this session");
+        aiDisabled = true;
+        const { reviews, accusedPlayerId } = buildFallbackReviews();
+        return { reviews, accusedPlayerId, usedFallback: true };
+      }
+      console.error(`Error generating tribunal reviews (attempt ${attempt + 1}):`, err);
+    }
+  }
+
+  console.error("generateTribunalReviews: both attempts failed, using fallback");
+  const { reviews, accusedPlayerId } = buildFallbackReviews();
+  return { reviews, accusedPlayerId, usedFallback: true };
 }

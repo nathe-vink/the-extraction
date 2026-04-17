@@ -203,3 +203,200 @@ export const FALLBACK_REVIEW_COMMENTS: string[] = [
   "I'm worried about you — but the universe has a way of rewarding the inexplicable.",
   "On Vexar-9 that would not make the cut. On this planet, today, with this group — points.",
 ];
+
+// ─── Answer-aware fallback review generator ───────────────────────────────────
+// Used when the AI is offline. Produces a comment that references the player's
+// actual answer text so it doesn't feel completely generic.
+
+function extractSnippet(answer: string): string {
+  const words = answer.trim().split(/\s+/).filter(Boolean);
+  const taken = words.slice(0, 7).join(" ");
+  // Strip trailing punctuation to keep the snippet clean for embedding
+  return taken.replace(/[.,!?;:]+$/, "");
+}
+
+const SNIPPET_COMMENTS_SHORT = [
+  (s: string) => `"${s}." That's it? That's *all*? Fine. The crowd will sort this out.`,
+  (s: string) => `I see you went with "${s}." Bold. Minimal. Vaguely suspicious.`,
+  (s: string) => `"${s}" — short, punchy, and somehow still confusing. I respect it.`,
+  (s: string) => `"${s}." My scanner flagged that as 'technically an answer.' Moving on.`,
+  (s: string) => `I didn't ask for brevity but here we are. "${s}." Your peers will judge.`,
+  (s: string) => `"${s}" — you had one job and you did exactly that job.`,
+  (s: string) => `Short. To the point. "${s}." I've heard worse from diplomats.`,
+  (s: string) => `"${s}." Just that. I'm processing. It's taking longer than expected.`,
+];
+
+const SNIPPET_COMMENTS_MEDIUM = [
+  (s: string) => `"${s}..." — you had more to say. The restraint is either wise or suspicious.`,
+  (s: string) => `Okay so you went with "${s}..." I noticed. I'm still noticing.`,
+  (s: string) => `"${s}..." — that's where you started. The crowd will decide if the journey was worth it.`,
+  (s: string) => `"${s}..." Interesting opening. I'll give you that.`,
+  (s: string) => `I read "${s}..." and I had thoughts. The others will have thoughts too.`,
+  (s: string) => `"${s}..." You landed on that. On purpose. I'm going to assume on purpose.`,
+  (s: string) => `"${s}..." — solid start. Whether it held up is for the crowd to determine.`,
+  (s: string) => `You said "${s}..." and then kept going. I respect the commitment.`,
+];
+
+const SNIPPET_COMMENTS_LONG = [
+  (s: string) => `You said a lot. "${s}..." — I read the first part. The effort is noted.`,
+  (s: string) => `"${s}..." and then more. Much more. The crowd appreciates dedication. Probably.`,
+  (s: string) => `I appreciate the length. "${s}..." — strong opener.`,
+  (s: string) => `"${s}..." — you had things to say. All of them. At once.`,
+  (s: string) => `You really went for it. "${s}..." Ambition noted.`,
+  (s: string) => `"${s}..." — I'm skimming. The crowd will weigh in.`,
+  (s: string) => `Longest answer this round. "${s}..." You earned your peers' attention.`,
+  (s: string) => `"${s}..." My co-pilot would have stopped reading there. I did not.`,
+];
+
+const EMPTY_COMMENTS = [
+  "...you submitted nothing. *Nothing.* The crowd will remember this.",
+  "I received your answer. It was empty. That's a choice. A terrible choice.",
+  "No answer. Not even an attempt. Your peers will handle the judgment.",
+  "Blank. You sent blank. On Vexar-9 this would be a diplomatic incident.",
+  "Nothing from you. I've seen this before. It never ends well.",
+];
+
+const DRAWING_COMMENTS = [
+  "Your drawing tells me more than you intended. I'm choosing not to say what.",
+  "I analyzed the image. I have questions. The crowd will answer them.",
+  "Visual. Bold. Slightly alarming.",
+  "On Vexar-9 we have a museum for drawings like this. It's not a compliment.",
+  "My scanner processed that image three times. The results were 'inconclusive.'",
+  "I'm looking at what you drew. I'm still looking.",
+  "That drawing said something. I'm not sure what.",
+  "My translation device doesn't handle images well. The crowd's reaction will be telling.",
+];
+
+function pickFromPool<T>(pool: T[], used: Set<number>): T {
+  const available = pool.map((_, i) => i).filter((i) => !used.has(i));
+  const indices = available.length > 0 ? available : pool.map((_, i) => i);
+  const idx = indices[Math.floor(Math.random() * indices.length)];
+  used.add(idx);
+  return pool[idx];
+}
+
+export function generateFallbackReview(
+  answer: string | undefined,
+  isDrawing: boolean,
+  used: Set<number>
+): { comment: string; score: number } {
+  // No AI scoring — community vote is the only scoring mechanism when offline.
+  // Score is always 0; vote bonus (+200 sole winner / +100 tied) applies normally.
+  const score = 0;
+
+  if (isDrawing) {
+    return { comment: pickFromPool(DRAWING_COMMENTS, used), score };
+  }
+
+  const text = (answer ?? "").trim();
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+
+  if (wordCount === 0) {
+    return { comment: pickFromPool(EMPTY_COMMENTS, used), score };
+  }
+
+  const snippet = extractSnippet(text);
+  let pool: Array<(s: string) => string>;
+  if (wordCount <= 5) {
+    pool = SNIPPET_COMMENTS_SHORT;
+  } else if (wordCount <= 15) {
+    pool = SNIPPET_COMMENTS_MEDIUM;
+  } else {
+    pool = SNIPPET_COMMENTS_LONG;
+  }
+
+  return { comment: pickFromPool(pool, used)(snippet), score };
+}
+
+// ─── Offline awards ceremony ──────────────────────────────────────────────────
+// Replaces the standard +200/+100 vote bonus when AI is offline.
+// Vote winner(s) get Crowd's Choice; everyone else gets a random award.
+
+import type { OfflineAward } from "./types";
+
+interface AwardTemplate {
+  id: string;
+  name: string;
+  icon: string;
+  getPoints: () => number;
+}
+
+const CROWD_CHOICE_AWARD: AwardTemplate = {
+  id: "crowd-choice",
+  name: "Crowd's Choice",
+  icon: "👑",
+  getPoints: () => 500,
+};
+
+// Standard positive awards — always safe, assigned freely
+const STANDARD_AWARDS: AwardTemplate[] = [
+  { id: "zyrax-fave",    name: "ZYRAX's Guilty Pleasure",      icon: "👽", getPoints: () => 400 },
+  { id: "survivor",      name: "Survivor Instinct Award",       icon: "🚀", getPoints: () => 350 },
+  { id: "unhinged",      name: "Most Unhinged Energy",          icon: "🌪️", getPoints: () => 300 },
+  { id: "mysterious",    name: "Mysteriously Compelling",       icon: "🔮", getPoints: () => 275 },
+  { id: "fleet-mention", name: "Honourable Fleet Mention",      icon: "⭐", getPoints: () => 225 },
+  { id: "ambassador",    name: "Vexar-9 Cultural Ambassador",   icon: "🌍", getPoints: () => 175 },
+  { id: "adequate",      name: "Barely Adequate",               icon: "🤷", getPoints: () => 125 },
+  { id: "participation", name: "Participation Recognition",     icon: "📋", getPoints: () => 75  },
+  { id: "consolation",   name: "The Consolation of Existence",  icon: "💫", getPoints: () => 50  },
+];
+
+// Exactly 1 of these is included per round (negative/chaotic outcomes)
+const NEGATIVE_AWARDS: AwardTemplate[] = [
+  { id: "chaos", name: "The Chaos Award",  icon: "🎲", getPoints: () => Math.floor(Math.random() * 701) - 100 },
+  { id: "jinx",  name: "ZYRAX's Jinx",    icon: "💀", getPoints: () => -50 },
+];
+
+// Exactly 1 of these is included per round (big positive surprise)
+const SPECIAL_POSITIVE_AWARDS: AwardTemplate[] = [
+  { id: "lucky", name: "Cosmic Lucky Draw", icon: "✨", getPoints: () => 450 },
+];
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/**
+ * Assign one award per player.
+ * Vote winner(s) → Crowd's Choice (+500).
+ * Remaining players → shuffled picks from RANDOM_AWARD_POOL.
+ */
+export function assignOfflineAwards(
+  voteWinnerIds: string[],
+  allPlayerIds: string[]
+): Record<string, OfflineAward> {
+  const result: Record<string, OfflineAward> = {};
+
+  for (const pid of voteWinnerIds) {
+    result[pid] = {
+      id: CROWD_CHOICE_AWARD.id,
+      name: CROWD_CHOICE_AWARD.name,
+      icon: CROWD_CHOICE_AWARD.icon,
+      points: CROWD_CHOICE_AWARD.getPoints(),
+    };
+  }
+
+  const others = allPlayerIds.filter((pid) => !voteWinnerIds.includes(pid));
+
+  // Build per-round pool: all standard awards + exactly 1 negative + exactly 1 special positive
+  const oneNegative = NEGATIVE_AWARDS[Math.floor(Math.random() * NEGATIVE_AWARDS.length)];
+  const oneSpecial = SPECIAL_POSITIVE_AWARDS[Math.floor(Math.random() * SPECIAL_POSITIVE_AWARDS.length)];
+  const shuffled = shuffle([...STANDARD_AWARDS, oneNegative, oneSpecial]);
+
+  others.forEach((pid, i) => {
+    const template = shuffled[i % shuffled.length];
+    result[pid] = {
+      id: template.id,
+      name: template.name,
+      icon: template.icon,
+      points: template.getPoints(),
+    };
+  });
+
+  return result;
+}

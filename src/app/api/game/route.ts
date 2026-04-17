@@ -7,6 +7,7 @@ import {
   generateAnswerReviews,
   generateSendoff,
   generateVoteReaction,
+  generateTribunalReviews,
 } from "@/lib/alien-ai";
 import {
   GameState,
@@ -17,9 +18,11 @@ import {
   generatePlayerId,
   getAvailableAvatar,
 } from "@/lib/types";
+import { assignOfflineAwards } from "@/lib/zyrax-fallbacks";
 
 const ROUND_DURATION = 60000; // 60 seconds
 const TOTAL_ROUNDS = 5;
+const TRIBUNAL_DURATION = 45000; // 45 seconds
 
 function addMessage(
   state: GameState,
@@ -91,20 +94,20 @@ async function setupNextQuestion(
   const nextRoundNum = state.roundHistory.length + 1;
 
   if (nextRoundNum > TOTAL_ROUNDS) {
-    // All rounds complete — determine winner and go to final results
-    if (!state.winnerId) {
-      const topPlayer = Object.entries(state.scores).sort(
-        ([, a], [, b]) => b - a
-      )[0];
-      state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+    if (state.players.length <= 1) {
+      await proceedToFinalResults(state, roomCode);
+      return;
     }
-    state.phase = "final-results";
-    state.roundDeadline = null;
-
-    const sendoff = state.cachedSendoff ?? await generateSendoff(state, state.winnerId!).catch(() => null);
-    addMessage(state, "alien", sendoff ?? "Get on the ship. NOW. We're leaving.");
-    state.cachedSendoff = null;
-
+    // Multi-player: enter Tribunal
+    state.tribunal = {
+      accusations: [],
+      reviews: [],
+      accusedPlayerId: null,
+      penaltyApplied: false,
+    };
+    state.phase = "accusing";
+    state.roundDeadline = Date.now() + TRIBUNAL_DURATION;
+    state.readyPlayers = [];
     await setGame(roomCode, state);
     await broadcast(roomCode, "game-update", state);
     return;
@@ -150,6 +153,66 @@ async function setupNextQuestion(
   await broadcast(roomCode, "game-update", state);
 }
 
+async function proceedToFinalResults(state: GameState, roomCode: string): Promise<void> {
+  if (!state.winnerId) {
+    const topPlayer = Object.entries(state.scores).sort(([, a], [, b]) => b - a)[0];
+    state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+  }
+  state.phase = "final-results";
+  state.roundDeadline = null;
+
+  const sendoff = state.cachedSendoff ?? await generateSendoff(state, state.winnerId!).catch(() => null);
+  addMessage(state, "alien", sendoff ?? "Get on the ship. NOW. We're leaving.");
+  state.cachedSendoff = null;
+
+  await setGame(roomCode, state);
+  await broadcast(roomCode, "game-update", state);
+}
+
+async function processTribunal(state: GameState, roomCode: string): Promise<void> {
+  if (!state.tribunal) return;
+
+  if (state.tribunal.accusations.length === 0) {
+    await proceedToFinalResults(state, roomCode);
+    return;
+  }
+
+  state.phase = "processing";
+  state.roundDeadline = null;
+  await setGame(roomCode, state);
+  await broadcast(roomCode, "game-update", state);
+
+  try {
+    const { reviews, accusedPlayerId, usedFallback } = await generateTribunalReviews(
+      state,
+      state.tribunal.accusations
+    );
+    state.tribunal.reviews = reviews;
+    state.tribunal.accusedPlayerId = accusedPlayerId;
+    if (usedFallback) state.aiOffline = true;
+
+    if (!state.tribunal.penaltyApplied && accusedPlayerId) {
+      state.scores[accusedPlayerId] = (state.scores[accusedPlayerId] || 0) - 600;
+      state.tribunal.penaltyApplied = true;
+    }
+  } catch (err) {
+    console.error("processTribunal AI error:", err);
+    const targetedIds = Array.from(new Set(state.tribunal.accusations.map((a) => a.targetId)));
+    const accused = targetedIds[Math.floor(Math.random() * targetedIds.length)] || state.players[0]?.id;
+    state.tribunal.accusedPlayerId = accused;
+    if (!state.tribunal.penaltyApplied && accused) {
+      state.scores[accused] = (state.scores[accused] || 0) - 600;
+      state.tribunal.penaltyApplied = true;
+    }
+    state.aiOffline = true;
+  }
+
+  // Return to "accusing" in reveal mode (reviews now populated)
+  state.phase = "accusing";
+  await setGame(roomCode, state);
+  await broadcast(roomCode, "game-update", state);
+}
+
 // Process a completed round (all answers in or timer expired)
 async function processRound(
   state: GameState,
@@ -171,7 +234,7 @@ async function processRound(
     const fullAnswers = fullState?.currentRound?.answers || round.answers;
 
     // Generate per-player reviews
-    const { reviews } = await generateAnswerReviews(
+    const { reviews, usedFallback } = await generateAnswerReviews(
       { ...state, currentRound: { ...round, answers: fullAnswers } },
       fullAnswers
     );
@@ -190,7 +253,14 @@ async function processRound(
         return `${p?.name}: ${r.score} pts — "${r.comment}"`;
       })
       .join("; ");
-    round.alienReaction = reactionSummary;
+
+    if (usedFallback) {
+      state.aiOffline = true;
+      round.alienReaction =
+        "My review transmitter is experiencing interference from Earth's atmosphere. Pre-recorded assessments incoming.";
+    } else {
+      round.alienReaction = reactionSummary;
+    }
 
     // Update conversation context
     state.conversationContext.push({
@@ -208,19 +278,18 @@ async function processRound(
     });
   } catch (err) {
     console.error("Error in processRound AI:", err);
-    // Fallback: give everyone random scores
-    const maxScore = round.roundType === "final-plea" ? 2000 : 1000;
+    // Fallback: no AI scores — community vote is the only scoring mechanism
+    state.aiOffline = true;
     for (const player of state.players) {
-      const score = Math.floor(Math.random() * maxScore * 0.4) + Math.floor(maxScore * 0.3);
-      round.roundScores[player.id] = score;
-      state.scores[player.id] = (state.scores[player.id] || 0) + score;
+      round.roundScores[player.id] = 0;
       round.answerReviews.push({
         playerId: player.id,
-        comment: "Hmm. I've seen worse. Moving on.",
-        score,
+        comment: "My systems are offline. The crowd will decide.",
+        score: 0,
       });
     }
-    round.alienReaction = "Let's just move on.";
+    round.alienReaction =
+      "My review transmitter is experiencing interference from Earth's atmosphere. Pre-recorded assessments incoming.";
   }
 
   // Move to reviewing phase — client will cycle through reviews
@@ -280,34 +349,48 @@ async function processVotes(state: GameState, roomCode: string): Promise<void> {
     ? Object.entries(voteCounts).filter(([, count]) => count === maxVotes).map(([pid]) => pid)
     : [];
 
-  // Apply bonuses: sole winner = +200, tied winners = +100 each
-  const bonus = winners.length === 1 ? 200 : 100;
-  for (const winnerId of winners) {
-    round.voteBonus[winnerId] = bonus;
-    round.roundScores[winnerId] = (round.roundScores[winnerId] || 0) + bonus;
-    state.scores[winnerId] = (state.scores[winnerId] || 0) + bonus;
+  if (state.aiOffline) {
+    // Offline mode: creative awards replace the standard vote bonus
+    const allPlayerIds = state.players.map((p) => p.id);
+    const awards = assignOfflineAwards(winners, allPlayerIds);
+    round.awards = awards;
+    for (const [pid, award] of Object.entries(awards)) {
+      const pts = Math.max(0, award.points); // don't let negative awards reduce prior scores
+      round.voteBonus[pid] = pts;
+      round.roundScores[pid] = (round.roundScores[pid] || 0) + pts;
+      state.scores[pid] = (state.scores[pid] || 0) + pts;
+    }
+    round.voteReaction = "My scoring systems are down. The awards ceremony will proceed as programmed.";
+  } else {
+    // Normal mode: sole winner = +200, tied winners = +100 each
+    const bonus = winners.length === 1 ? 200 : 100;
+    for (const winnerId of winners) {
+      round.voteBonus[winnerId] = bonus;
+      round.roundScores[winnerId] = (round.roundScores[winnerId] || 0) + bonus;
+      state.scores[winnerId] = (state.scores[winnerId] || 0) + bonus;
+    }
+
+    // Determine ZYRAX's top AI scorer for the reaction
+    const aiTopEntry = Object.entries(round.roundScores)
+      .map(([pid, score]) => ({ pid, score: score - (round.voteBonus[pid] || 0) }))
+      .sort((a, b) => b.score - a.score)[0];
+
+    const crowdWinnerId = winners[0] || "";
+    const crowdWinner = state.players.find((p) => p.id === crowdWinnerId);
+    const aiTopPlayer = state.players.find((p) => p.id === aiTopEntry?.pid);
+    const agreed = crowdWinnerId === aiTopEntry?.pid;
+    const crowdWinnerAnswer = round.roundType === "drawing" ? "[a drawing]" : (round.answers[crowdWinnerId] || "");
+
+    round.voteReaction = await generateVoteReaction(
+      crowdWinner?.name || "someone",
+      crowdWinnerAnswer,
+      aiTopPlayer?.name || "someone",
+      agreed
+    ).catch(() => agreed
+      ? "Finally, you agree with me. Mark this date in history."
+      : "Questionable taste, humans. But noted."
+    );
   }
-
-  // Determine ZYRAX's top AI scorer for the reaction
-  const aiTopEntry = Object.entries(round.roundScores)
-    .map(([pid, score]) => ({ pid, score: score - (round.voteBonus[pid] || 0) }))
-    .sort((a, b) => b.score - a.score)[0];
-
-  const crowdWinnerId = winners[0] || "";
-  const crowdWinner = state.players.find((p) => p.id === crowdWinnerId);
-  const aiTopPlayer = state.players.find((p) => p.id === aiTopEntry?.pid);
-  const agreed = crowdWinnerId === aiTopEntry?.pid;
-  const crowdWinnerAnswer = round.roundType === "drawing" ? "[a drawing]" : (round.answers[crowdWinnerId] || "");
-
-  round.voteReaction = await generateVoteReaction(
-    crowdWinner?.name || "someone",
-    crowdWinnerAnswer,
-    aiTopPlayer?.name || "someone",
-    agreed
-  ).catch(() => agreed
-    ? "Finally, you agree with me. Mark this date in history."
-    : "Questionable taste, humans. But noted."
-  );
 
   round.votingDeadline = null;
 
@@ -684,6 +767,54 @@ export async function POST(request: NextRequest) {
         state.readyPlayers = [];
         await setGame(roomCode, state);
         await broadcast(roomCode, "game-update", state);
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      case "submit-accusation": {
+        const { roomCode, playerId, targetId, reason } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "accusing" || !state.tribunal || state.tribunal.reviews.length > 0) {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+        if (targetId === playerId) {
+          return NextResponse.json({ success: false, error: "Can't accuse yourself" });
+        }
+        const accusation = { accuserId: playerId, targetId, reason: String(reason).trim().slice(0, 500) };
+        const existing = state.tribunal.accusations.findIndex((a) => a.accuserId === playerId);
+        if (existing >= 0) {
+          state.tribunal.accusations[existing] = accusation;
+        } else {
+          state.tribunal.accusations.push(accusation);
+        }
+        await setGame(roomCode, state);
+        await broadcast(roomCode, "game-update", state);
+        if (state.tribunal.accusations.length >= state.players.length) {
+          await processTribunal(state, roomCode);
+        }
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      case "tribunal-timer-expire": {
+        const { roomCode } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "accusing" || !state.tribunal || state.tribunal.reviews.length > 0) {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+        await processTribunal(state, roomCode);
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      case "tribunal-done": {
+        const { roomCode } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "accusing" || !state.tribunal?.reviews?.length) {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+        // Recompute winner — -600 may have flipped the leaderboard
+        const topPlayer = Object.entries(state.scores).sort(([, a], [, b]) => b - a)[0];
+        state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+        state.cachedSendoff = null; // stale — generate fresh sendoff for actual winner
+        await proceedToFinalResults(state, roomCode);
         return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
       }
 
