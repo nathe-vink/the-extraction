@@ -17,6 +17,7 @@ import {
   generatePlayerId,
   getAvailableAvatar,
 } from "@/lib/types";
+import { assignOfflineAwards } from "@/lib/zyrax-fallbacks";
 
 const ROUND_DURATION = 60000; // 60 seconds
 const TOTAL_ROUNDS = 5;
@@ -286,34 +287,48 @@ async function processVotes(state: GameState, roomCode: string): Promise<void> {
     ? Object.entries(voteCounts).filter(([, count]) => count === maxVotes).map(([pid]) => pid)
     : [];
 
-  // Apply bonuses: sole winner = +200, tied winners = +100 each
-  const bonus = winners.length === 1 ? 200 : 100;
-  for (const winnerId of winners) {
-    round.voteBonus[winnerId] = bonus;
-    round.roundScores[winnerId] = (round.roundScores[winnerId] || 0) + bonus;
-    state.scores[winnerId] = (state.scores[winnerId] || 0) + bonus;
+  if (state.aiOffline) {
+    // Offline mode: creative awards replace the standard vote bonus
+    const allPlayerIds = state.players.map((p) => p.id);
+    const awards = assignOfflineAwards(winners, allPlayerIds);
+    round.awards = awards;
+    for (const [pid, award] of Object.entries(awards)) {
+      const pts = Math.max(0, award.points); // don't let negative awards reduce prior scores
+      round.voteBonus[pid] = pts;
+      round.roundScores[pid] = (round.roundScores[pid] || 0) + pts;
+      state.scores[pid] = (state.scores[pid] || 0) + pts;
+    }
+    round.voteReaction = "My scoring systems are down. The awards ceremony will proceed as programmed.";
+  } else {
+    // Normal mode: sole winner = +200, tied winners = +100 each
+    const bonus = winners.length === 1 ? 200 : 100;
+    for (const winnerId of winners) {
+      round.voteBonus[winnerId] = bonus;
+      round.roundScores[winnerId] = (round.roundScores[winnerId] || 0) + bonus;
+      state.scores[winnerId] = (state.scores[winnerId] || 0) + bonus;
+    }
+
+    // Determine ZYRAX's top AI scorer for the reaction
+    const aiTopEntry = Object.entries(round.roundScores)
+      .map(([pid, score]) => ({ pid, score: score - (round.voteBonus[pid] || 0) }))
+      .sort((a, b) => b.score - a.score)[0];
+
+    const crowdWinnerId = winners[0] || "";
+    const crowdWinner = state.players.find((p) => p.id === crowdWinnerId);
+    const aiTopPlayer = state.players.find((p) => p.id === aiTopEntry?.pid);
+    const agreed = crowdWinnerId === aiTopEntry?.pid;
+    const crowdWinnerAnswer = round.roundType === "drawing" ? "[a drawing]" : (round.answers[crowdWinnerId] || "");
+
+    round.voteReaction = await generateVoteReaction(
+      crowdWinner?.name || "someone",
+      crowdWinnerAnswer,
+      aiTopPlayer?.name || "someone",
+      agreed
+    ).catch(() => agreed
+      ? "Finally, you agree with me. Mark this date in history."
+      : "Questionable taste, humans. But noted."
+    );
   }
-
-  // Determine ZYRAX's top AI scorer for the reaction
-  const aiTopEntry = Object.entries(round.roundScores)
-    .map(([pid, score]) => ({ pid, score: score - (round.voteBonus[pid] || 0) }))
-    .sort((a, b) => b.score - a.score)[0];
-
-  const crowdWinnerId = winners[0] || "";
-  const crowdWinner = state.players.find((p) => p.id === crowdWinnerId);
-  const aiTopPlayer = state.players.find((p) => p.id === aiTopEntry?.pid);
-  const agreed = crowdWinnerId === aiTopEntry?.pid;
-  const crowdWinnerAnswer = round.roundType === "drawing" ? "[a drawing]" : (round.answers[crowdWinnerId] || "");
-
-  round.voteReaction = await generateVoteReaction(
-    crowdWinner?.name || "someone",
-    crowdWinnerAnswer,
-    aiTopPlayer?.name || "someone",
-    agreed
-  ).catch(() => agreed
-    ? "Finally, you agree with me. Mark this date in history."
-    : "Questionable taste, humans. But noted."
-  );
 
   round.votingDeadline = null;
 

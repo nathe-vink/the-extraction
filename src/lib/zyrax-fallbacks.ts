@@ -307,3 +307,85 @@ export function generateFallbackReview(
 
   return { comment: pickFromPool(pool, used)(snippet), score };
 }
+
+// ─── Offline awards ceremony ──────────────────────────────────────────────────
+// Replaces the standard +200/+100 vote bonus when AI is offline.
+// Vote winner(s) get Crowd's Choice; everyone else gets a random award.
+
+import type { OfflineAward } from "./types";
+
+interface AwardTemplate {
+  id: string;
+  name: string;
+  icon: string;
+  getPoints: () => number;
+}
+
+const CROWD_CHOICE_AWARD: AwardTemplate = {
+  id: "crowd-choice",
+  name: "Crowd's Choice",
+  icon: "👑",
+  getPoints: () => 500,
+};
+
+// Pool drawn from for non-vote-winners (shuffled each round)
+const RANDOM_AWARD_POOL: AwardTemplate[] = [
+  { id: "zyrax-fave",    name: "ZYRAX's Guilty Pleasure",      icon: "👽", getPoints: () => 400 },
+  { id: "survivor",      name: "Survivor Instinct Award",       icon: "🚀", getPoints: () => 350 },
+  { id: "unhinged",      name: "Most Unhinged Energy",          icon: "🌪️", getPoints: () => 300 },
+  { id: "mysterious",    name: "Mysteriously Compelling",       icon: "🔮", getPoints: () => 275 },
+  { id: "fleet-mention", name: "Honourable Fleet Mention",      icon: "⭐", getPoints: () => 225 },
+  { id: "ambassador",    name: "Vexar-9 Cultural Ambassador",   icon: "🌍", getPoints: () => 175 },
+  { id: "adequate",      name: "Barely Adequate",               icon: "🤷", getPoints: () => 125 },
+  { id: "participation", name: "Participation Recognition",     icon: "📋", getPoints: () => 75  },
+  { id: "consolation",   name: "The Consolation of Existence",  icon: "💫", getPoints: () => 50  },
+  // Chaos awards — outcomes unpredictable
+  { id: "chaos",  name: "The Chaos Award",    icon: "🎲", getPoints: () => Math.floor(Math.random() * 701) - 100 }, // -100 to +600
+  { id: "jinx",   name: "ZYRAX's Jinx",       icon: "💀", getPoints: () => -50 },
+  { id: "lucky",  name: "Cosmic Lucky Draw",  icon: "✨", getPoints: () => 450 },
+];
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/**
+ * Assign one award per player.
+ * Vote winner(s) → Crowd's Choice (+500).
+ * Remaining players → shuffled picks from RANDOM_AWARD_POOL.
+ */
+export function assignOfflineAwards(
+  voteWinnerIds: string[],
+  allPlayerIds: string[]
+): Record<string, OfflineAward> {
+  const result: Record<string, OfflineAward> = {};
+
+  for (const pid of voteWinnerIds) {
+    result[pid] = {
+      id: CROWD_CHOICE_AWARD.id,
+      name: CROWD_CHOICE_AWARD.name,
+      icon: CROWD_CHOICE_AWARD.icon,
+      points: CROWD_CHOICE_AWARD.getPoints(),
+    };
+  }
+
+  const others = allPlayerIds.filter((pid) => !voteWinnerIds.includes(pid));
+  const shuffled = shuffle(RANDOM_AWARD_POOL);
+
+  others.forEach((pid, i) => {
+    const template = shuffled[i % shuffled.length];
+    result[pid] = {
+      id: template.id,
+      name: template.name,
+      icon: template.icon,
+      points: template.getPoints(),
+    };
+  });
+
+  return result;
+}

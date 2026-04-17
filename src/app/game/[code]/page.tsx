@@ -924,6 +924,7 @@ export default function GamePage() {
               players={gameState.players}
               drawings={drawings}
               currentPlayerId={playerId}
+              aiOffline={gameState.aiOffline}
             />
           ) : (
             <VotingScreen
@@ -1214,6 +1215,7 @@ function VoteRevealScreen({
   players,
   drawings,
   currentPlayerId,
+  aiOffline,
 }: {
   round: {
     question: string;
@@ -1222,10 +1224,12 @@ function VoteRevealScreen({
     votes: Record<string, string>;
     voteReaction: string;
     voteBonus: Record<string, number>;
+    awards?: Record<string, { id: string; name: string; icon: string; points: number }>;
   };
   players: Player[];
   drawings: Record<string, string>;
   currentPlayerId: string;
+  aiOffline?: boolean;
 }) {
   const isDrawing = round.roundType === "drawing";
 
@@ -1236,20 +1240,23 @@ function VoteRevealScreen({
   }
   const maxVotes = Math.max(0, ...Object.values(voteCounts));
 
-  // Sort by vote count descending
+  // Sort by vote count descending (normal) or by award points descending (offline)
   const rankedEntries = Object.entries(round.answers)
     .map(([pid, answer]) => ({
       pid,
       answer,
       votes: voteCounts[pid] || 0,
       bonus: round.voteBonus[pid] || 0,
+      award: round.awards?.[pid],
       player: players.find((p) => p.id === pid),
     }))
-    .sort((a, b) => b.votes - a.votes);
+    .sort((a, b) => aiOffline ? b.bonus - a.bonus : b.votes - a.votes);
 
   return (
     <div className="flex-1 flex flex-col p-4 gap-4 overflow-y-auto animate-fade-in">
-      <p className="font-pixel text-[10px] neon-text-pink text-center flex-shrink-0">THE CROWD HAS SPOKEN</p>
+      <p className="font-pixel text-[10px] neon-text-pink text-center flex-shrink-0">
+        {aiOffline ? "AWARDS CEREMONY" : "THE CROWD HAS SPOKEN"}
+      </p>
 
       {/* ZYRAX reaction */}
       <div className="alien-bubble p-3 flex-shrink-0">
@@ -1262,21 +1269,22 @@ function VoteRevealScreen({
         </p>
       </div>
 
-      {/* Ranked answers with vote counts */}
+      {/* Ranked answers */}
       <div className="flex flex-col gap-3">
-        {rankedEntries.map(({ pid, answer, votes, bonus, player }, i) => {
-          const isWinner = votes === maxVotes && maxVotes > 0;
+        {rankedEntries.map(({ pid, answer, votes, bonus, award, player }, i) => {
+          const isVoteWinner = votes === maxVotes && maxVotes > 0;
+          const isCrowdChoice = award?.id === "crowd-choice";
+          const isHighlight = aiOffline ? isCrowdChoice : (isVoteWinner && i === 0);
           const isYou = pid === currentPlayerId;
           const drawingData = drawings[pid];
           const avatarColor = AVATAR_CONFIG[player?.avatar || "hillbilly"]?.color || "#39ff14";
+          const isChaos = award?.id === "chaos" || award?.id === "jinx";
 
           return (
             <div
               key={pid}
               className={`rounded-xl p-3 border animate-slide-up ${
-                isWinner && i === 0
-                  ? "border-neon-pink/60 bg-neon-pink/10"
-                  : "border-white/10 bg-white/5"
+                isHighlight ? "border-neon-pink/60 bg-neon-pink/10" : "border-white/10 bg-white/5"
               }`}
               style={{ animationDelay: `${i * 200}ms` }}
             >
@@ -1285,32 +1293,55 @@ function VoteRevealScreen({
                 <span className={`text-sm flex-1 font-semibold ${isYou ? "text-white" : "text-gray-300"}`}>
                   {player?.name}{isYou ? " (you)" : ""}
                 </span>
-                {isWinner && i === 0 && <span className="text-lg">👑</span>}
-                <span className="font-pixel text-xs" style={{ color: avatarColor }}>
-                  {votes} vote{votes !== 1 ? "s" : ""}
-                </span>
-                {bonus > 0 && (
-                  <span className="font-pixel text-xs neon-text-yellow">+{bonus}</span>
+
+                {/* Offline: show award badge */}
+                {aiOffline && award && (
+                  <span className={`font-pixel text-[9px] px-1.5 py-0.5 rounded border ${
+                    isChaos ? "border-neon-pink/50 text-pink-300" : "border-white/20 text-gray-300"
+                  }`}>
+                    {award.icon} {award.name}
+                  </span>
+                )}
+
+                {/* Normal: show vote count + crown */}
+                {!aiOffline && isVoteWinner && i === 0 && <span className="text-lg">👑</span>}
+                {!aiOffline && (
+                  <span className="font-pixel text-xs" style={{ color: avatarColor }}>
+                    {votes} vote{votes !== 1 ? "s" : ""}
+                  </span>
+                )}
+
+                {/* Points awarded (both modes) */}
+                {bonus !== 0 && (
+                  <span className={`font-pixel text-xs ${
+                    bonus < 0 ? "text-red-400" : "neon-text-yellow"
+                  }`}>
+                    {bonus > 0 ? "+" : ""}{bonus}
+                  </span>
                 )}
               </div>
+
               {isDrawing && drawingData ? (
                 /* eslint-disable-next-line @next/next/no-img-element */
                 <img src={drawingData} alt={`${player?.name}'s drawing`} className="rounded max-w-[140px]" style={{ imageRendering: "pixelated" }} />
               ) : (
                 <p className="text-gray-400 text-xs pl-9">{answer === "[drawing]" ? "🎨 [Drawing]" : answer}</p>
               )}
-              {/* Vote bar */}
-              <div className="mt-2 h-1.5 bg-white/10 rounded-full overflow-hidden">
-                <div
-                  className="h-full rounded-full transition-all duration-1000 ease-out"
-                  style={{
-                    width: maxVotes > 0 ? `${(votes / maxVotes) * 100}%` : "0%",
-                    backgroundColor: avatarColor,
-                    boxShadow: `0 0 6px ${avatarColor}`,
-                    transitionDelay: `${i * 300 + 400}ms`,
-                  }}
-                />
-              </div>
+
+              {/* Vote bar (normal mode only) */}
+              {!aiOffline && (
+                <div className="mt-2 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-1000 ease-out"
+                    style={{
+                      width: maxVotes > 0 ? `${(votes / maxVotes) * 100}%` : "0%",
+                      backgroundColor: avatarColor,
+                      boxShadow: `0 0 6px ${avatarColor}`,
+                      transitionDelay: `${i * 300 + 400}ms`,
+                    }}
+                  />
+                </div>
+              )}
             </div>
           );
         })}

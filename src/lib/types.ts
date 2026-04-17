@@ -48,6 +48,13 @@ export interface AnswerReview {
   score: number;
 }
 
+export interface OfflineAward {
+  id: string;
+  name: string;
+  icon: string;
+  points: number;
+}
+
 export interface GameMessage {
   id: string;
   sender: "alien" | "system" | string;
@@ -67,6 +74,7 @@ export interface RoundState {
   votingDeadline: number | null;
   voteReaction: string;
   voteBonus: Record<string, number>;   // playerId → bonus awarded (200 or 100)
+  awards?: Record<string, OfflineAward>; // playerId → offline mode award
 }
 
 export interface GameState {
