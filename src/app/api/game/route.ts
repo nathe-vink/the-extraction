@@ -7,6 +7,7 @@ import {
   generateAnswerReviews,
   generateSendoff,
   generateVoteReaction,
+  generateTribunalReviews,
 } from "@/lib/alien-ai";
 import {
   GameState,
@@ -21,6 +22,7 @@ import { assignOfflineAwards } from "@/lib/zyrax-fallbacks";
 
 const ROUND_DURATION = 60000; // 60 seconds
 const TOTAL_ROUNDS = 5;
+const TRIBUNAL_DURATION = 45000; // 45 seconds
 
 function addMessage(
   state: GameState,
@@ -92,20 +94,20 @@ async function setupNextQuestion(
   const nextRoundNum = state.roundHistory.length + 1;
 
   if (nextRoundNum > TOTAL_ROUNDS) {
-    // All rounds complete — determine winner and go to final results
-    if (!state.winnerId) {
-      const topPlayer = Object.entries(state.scores).sort(
-        ([, a], [, b]) => b - a
-      )[0];
-      state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+    if (state.players.length <= 1) {
+      await proceedToFinalResults(state, roomCode);
+      return;
     }
-    state.phase = "final-results";
-    state.roundDeadline = null;
-
-    const sendoff = state.cachedSendoff ?? await generateSendoff(state, state.winnerId!).catch(() => null);
-    addMessage(state, "alien", sendoff ?? "Get on the ship. NOW. We're leaving.");
-    state.cachedSendoff = null;
-
+    // Multi-player: enter Tribunal
+    state.tribunal = {
+      accusations: [],
+      reviews: [],
+      accusedPlayerId: null,
+      penaltyApplied: false,
+    };
+    state.phase = "accusing";
+    state.roundDeadline = Date.now() + TRIBUNAL_DURATION;
+    state.readyPlayers = [];
     await setGame(roomCode, state);
     await broadcast(roomCode, "game-update", state);
     return;
@@ -147,6 +149,66 @@ async function setupNextQuestion(
   state.roundDeadline = Date.now() + ROUND_DURATION;
   state.readyPlayers = [];
 
+  await setGame(roomCode, state);
+  await broadcast(roomCode, "game-update", state);
+}
+
+async function proceedToFinalResults(state: GameState, roomCode: string): Promise<void> {
+  if (!state.winnerId) {
+    const topPlayer = Object.entries(state.scores).sort(([, a], [, b]) => b - a)[0];
+    state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+  }
+  state.phase = "final-results";
+  state.roundDeadline = null;
+
+  const sendoff = state.cachedSendoff ?? await generateSendoff(state, state.winnerId!).catch(() => null);
+  addMessage(state, "alien", sendoff ?? "Get on the ship. NOW. We're leaving.");
+  state.cachedSendoff = null;
+
+  await setGame(roomCode, state);
+  await broadcast(roomCode, "game-update", state);
+}
+
+async function processTribunal(state: GameState, roomCode: string): Promise<void> {
+  if (!state.tribunal) return;
+
+  if (state.tribunal.accusations.length === 0) {
+    await proceedToFinalResults(state, roomCode);
+    return;
+  }
+
+  state.phase = "processing";
+  state.roundDeadline = null;
+  await setGame(roomCode, state);
+  await broadcast(roomCode, "game-update", state);
+
+  try {
+    const { reviews, accusedPlayerId, usedFallback } = await generateTribunalReviews(
+      state,
+      state.tribunal.accusations
+    );
+    state.tribunal.reviews = reviews;
+    state.tribunal.accusedPlayerId = accusedPlayerId;
+    if (usedFallback) state.aiOffline = true;
+
+    if (!state.tribunal.penaltyApplied && accusedPlayerId) {
+      state.scores[accusedPlayerId] = (state.scores[accusedPlayerId] || 0) - 600;
+      state.tribunal.penaltyApplied = true;
+    }
+  } catch (err) {
+    console.error("processTribunal AI error:", err);
+    const targetedIds = Array.from(new Set(state.tribunal.accusations.map((a) => a.targetId)));
+    const accused = targetedIds[Math.floor(Math.random() * targetedIds.length)] || state.players[0]?.id;
+    state.tribunal.accusedPlayerId = accused;
+    if (!state.tribunal.penaltyApplied && accused) {
+      state.scores[accused] = (state.scores[accused] || 0) - 600;
+      state.tribunal.penaltyApplied = true;
+    }
+    state.aiOffline = true;
+  }
+
+  // Return to "accusing" in reveal mode (reviews now populated)
+  state.phase = "accusing";
   await setGame(roomCode, state);
   await broadcast(roomCode, "game-update", state);
 }
@@ -705,6 +767,54 @@ export async function POST(request: NextRequest) {
         state.readyPlayers = [];
         await setGame(roomCode, state);
         await broadcast(roomCode, "game-update", state);
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      case "submit-accusation": {
+        const { roomCode, playerId, targetId, reason } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "accusing" || !state.tribunal || state.tribunal.reviews.length > 0) {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+        if (targetId === playerId) {
+          return NextResponse.json({ success: false, error: "Can't accuse yourself" });
+        }
+        const accusation = { accuserId: playerId, targetId, reason: String(reason).trim().slice(0, 500) };
+        const existing = state.tribunal.accusations.findIndex((a) => a.accuserId === playerId);
+        if (existing >= 0) {
+          state.tribunal.accusations[existing] = accusation;
+        } else {
+          state.tribunal.accusations.push(accusation);
+        }
+        await setGame(roomCode, state);
+        await broadcast(roomCode, "game-update", state);
+        if (state.tribunal.accusations.length >= state.players.length) {
+          await processTribunal(state, roomCode);
+        }
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      case "tribunal-timer-expire": {
+        const { roomCode } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "accusing" || !state.tribunal || state.tribunal.reviews.length > 0) {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+        await processTribunal(state, roomCode);
+        return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
+      }
+
+      case "tribunal-done": {
+        const { roomCode } = body;
+        const state = await getGame(roomCode);
+        if (!state || state.phase !== "accusing" || !state.tribunal?.reviews?.length) {
+          return NextResponse.json({ success: true, gameState: state ? sanitizeForBroadcast(state) : undefined });
+        }
+        // Recompute winner — -600 may have flipped the leaderboard
+        const topPlayer = Object.entries(state.scores).sort(([, a], [, b]) => b - a)[0];
+        state.winnerId = topPlayer?.[0] || state.players[0]?.id;
+        state.cachedSendoff = null; // stale — generate fresh sendoff for actual winner
+        await proceedToFinalResults(state, roomCode);
         return NextResponse.json({ success: true, gameState: sanitizeForBroadcast(state) });
       }
 
