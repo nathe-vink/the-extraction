@@ -365,7 +365,6 @@ Respond in JSON:
       const { comment, score } = generateFallbackReview(
         answers[player.id],
         isDrawing,
-        maxScore,
         usedCommentIndices
       );
       return { playerId: player.id, comment, score };

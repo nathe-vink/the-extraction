@@ -215,19 +215,18 @@ async function processRound(
     });
   } catch (err) {
     console.error("Error in processRound AI:", err);
-    // Fallback: give everyone random scores
-    const maxScore = round.roundType === "final-plea" ? 2000 : 1000;
+    // Fallback: no AI scores — community vote is the only scoring mechanism
+    state.aiOffline = true;
     for (const player of state.players) {
-      const score = Math.floor(Math.random() * maxScore * 0.4) + Math.floor(maxScore * 0.3);
-      round.roundScores[player.id] = score;
-      state.scores[player.id] = (state.scores[player.id] || 0) + score;
+      round.roundScores[player.id] = 0;
       round.answerReviews.push({
         playerId: player.id,
-        comment: "Hmm. I've seen worse. Moving on.",
-        score,
+        comment: "My systems are offline. The crowd will decide.",
+        score: 0,
       });
     }
-    round.alienReaction = "Let's just move on.";
+    round.alienReaction =
+      "My review transmitter is experiencing interference from Earth's atmosphere. Pre-recorded assessments incoming.";
   }
 
   // Move to reviewing phase — client will cycle through reviews
