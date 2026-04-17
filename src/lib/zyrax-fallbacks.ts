@@ -328,8 +328,8 @@ const CROWD_CHOICE_AWARD: AwardTemplate = {
   getPoints: () => 500,
 };
 
-// Pool drawn from for non-vote-winners (shuffled each round)
-const RANDOM_AWARD_POOL: AwardTemplate[] = [
+// Standard positive awards — always safe, assigned freely
+const STANDARD_AWARDS: AwardTemplate[] = [
   { id: "zyrax-fave",    name: "ZYRAX's Guilty Pleasure",      icon: "👽", getPoints: () => 400 },
   { id: "survivor",      name: "Survivor Instinct Award",       icon: "🚀", getPoints: () => 350 },
   { id: "unhinged",      name: "Most Unhinged Energy",          icon: "🌪️", getPoints: () => 300 },
@@ -339,10 +339,17 @@ const RANDOM_AWARD_POOL: AwardTemplate[] = [
   { id: "adequate",      name: "Barely Adequate",               icon: "🤷", getPoints: () => 125 },
   { id: "participation", name: "Participation Recognition",     icon: "📋", getPoints: () => 75  },
   { id: "consolation",   name: "The Consolation of Existence",  icon: "💫", getPoints: () => 50  },
-  // Chaos awards — outcomes unpredictable
-  { id: "chaos",  name: "The Chaos Award",    icon: "🎲", getPoints: () => Math.floor(Math.random() * 701) - 100 }, // -100 to +600
-  { id: "jinx",   name: "ZYRAX's Jinx",       icon: "💀", getPoints: () => -50 },
-  { id: "lucky",  name: "Cosmic Lucky Draw",  icon: "✨", getPoints: () => 450 },
+];
+
+// Exactly 1 of these is included per round (negative/chaotic outcomes)
+const NEGATIVE_AWARDS: AwardTemplate[] = [
+  { id: "chaos", name: "The Chaos Award",  icon: "🎲", getPoints: () => Math.floor(Math.random() * 701) - 100 },
+  { id: "jinx",  name: "ZYRAX's Jinx",    icon: "💀", getPoints: () => -50 },
+];
+
+// Exactly 1 of these is included per round (big positive surprise)
+const SPECIAL_POSITIVE_AWARDS: AwardTemplate[] = [
+  { id: "lucky", name: "Cosmic Lucky Draw", icon: "✨", getPoints: () => 450 },
 ];
 
 function shuffle<T>(arr: T[]): T[] {
@@ -375,7 +382,11 @@ export function assignOfflineAwards(
   }
 
   const others = allPlayerIds.filter((pid) => !voteWinnerIds.includes(pid));
-  const shuffled = shuffle(RANDOM_AWARD_POOL);
+
+  // Build per-round pool: all standard awards + exactly 1 negative + exactly 1 special positive
+  const oneNegative = NEGATIVE_AWARDS[Math.floor(Math.random() * NEGATIVE_AWARDS.length)];
+  const oneSpecial = SPECIAL_POSITIVE_AWARDS[Math.floor(Math.random() * SPECIAL_POSITIVE_AWARDS.length)];
+  const shuffled = shuffle([...STANDARD_AWARDS, oneNegative, oneSpecial]);
 
   others.forEach((pid, i) => {
     const template = shuffled[i % shuffled.length];
