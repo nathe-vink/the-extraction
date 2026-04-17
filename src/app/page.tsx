@@ -278,8 +278,13 @@ export default function Home() {
       </div>
 
       {/* Footer */}
-      <div className="mt-16 text-center text-gray-600 text-xs">
+      <div className="mt-16 text-center text-gray-600 text-xs space-y-1">
         <p>2-8 players &middot; 15-20 minutes &middot; Betrayal guaranteed</p>
+        {process.env.NEXT_PUBLIC_BUILD_TIME && (
+          <p className="text-gray-700">
+            Transmission date: {new Date(process.env.NEXT_PUBLIC_BUILD_TIME).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}
+          </p>
+        )}
       </div>
     </main>
   );
