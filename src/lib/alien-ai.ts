@@ -230,11 +230,16 @@ ${roundNum >= 4 ? "- You're getting impatient. The fleet is close. Make the ques
 Respond in JSON: { "question": "..." }`;
   }
 
+  const GROUP_ROUND_FALLBACKS: Record<number, string> = {
+    1: "Tell me something about yourselves that might actually be interesting. I'm running out of patience here.",
+    2: "What is something you're genuinely good at? I need data before I make this decision.",
+    4: "You've lasted this long. Tell me one thing about you I won't find anywhere else in this galaxy.",
+  };
   const fallback = roundType === "drawing"
     ? "Quick, draw what you think the inside of my ship looks like. And no, it doesn't have cup holders."
     : roundType === "final-plea"
       ? "Last chance. My fleet is almost here. In one sentence, tell me why I shouldn't leave you behind to become cosmic dust."
-      : "Tell me something about yourselves that might actually be interesting. I'm running out of patience here.";
+      : GROUP_ROUND_FALLBACKS[roundNum] ?? "Tell me something interesting. My patience is expired.";
 
   try {
     const response = await withTimeout(

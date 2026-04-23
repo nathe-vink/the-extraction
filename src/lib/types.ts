@@ -70,6 +70,7 @@ export interface TribunalState {
   penaltyApplied: boolean;
 }
 
+
 export interface OfflineAward {
   id: string;
   name: string;
