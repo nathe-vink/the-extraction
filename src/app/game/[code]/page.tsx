@@ -497,7 +497,14 @@ export default function GamePage() {
         const data = await res.json();
         if (!data.success || !data.gameState) return;
         const gs = data.gameState as GameState;
-        if (gs.phase === phase) return; // no change yet
+        if (gs.phase === phase) {
+          // In voting phase, detect voteReaction being set (all votes tallied) even
+          // without a phase change — socket offline means broadcast was lost.
+          if (phase === "voting" && gs.currentRound?.voteReaction) {
+            setGameState(gs);
+          }
+          return;
+        }
 
         setGameState(gs);
         setReadyCount(gs.readyPlayers?.length || 0);
@@ -1064,11 +1071,12 @@ export default function GamePage() {
               voteSubmitted={voteSubmitted}
               votingTimeLeft={votingTimeLeft}
               drawings={drawings}
-              onVote={(votedForId) => {
+              onVote={async (votedForId) => {
                 initSound();
                 setSelectedVote(votedForId);
                 setVoteSubmitted(true);
-                callAPI("submit-vote", { votedForId });
+                const data = await callAPI("submit-vote", { votedForId });
+                if (data?.gameState) setGameState(data.gameState);
               }}
             />
           )
@@ -1339,7 +1347,7 @@ function VotingScreen({
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto grid grid-cols-1 gap-3 pb-2">
+      <div className="flex-1 overflow-y-auto grid grid-cols-1 gap-3 pb-2 content-start">
         {answerCards.map(([pid, answer]) => {
           const isSelected = selectedVote === pid;
           const drawingData = drawings[pid];
